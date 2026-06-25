@@ -4,11 +4,17 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+from app.services.ai_planner import generate_test_plan
+from app.services.semantic_targets import SEMANTIC_TARGET_SELECTORS
+from app.services.test_analyzer import TestAnalyzer
+
 STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "storage" / "screenshots"
 TIMEOUT_MS = 30_000
+TARGET_TIMEOUT_MS = 5_000
 _executor = ProcessPoolExecutor(max_workers=2)
 
 
@@ -19,92 +25,214 @@ class PlaywrightRunError(Exception):
         super().__init__(message)
 
 
-def _execute_sync(url: str, goal: str) -> dict:
+class TargetNotFoundError(Exception):
+    def __init__(self, target: str, selector: str):
+        self.target = target
+        self.selector = selector
+        super().__init__(f"Target '{target}' not found using selector '{selector}'")
+
+
+def _step_name(action: dict) -> str:
+    act = action["action"]
+    if "target" in action:
+        return f"{act}:{action['target']}"
+    if "text" in action:
+        return f"{act}:{action['text']}"
+    if act == "wait":
+        return f"wait:{action.get('ms', 1000)}ms"
+    return act
+
+
+def _resolve_selector(target: str) -> str:
+    selector = SEMANTIC_TARGET_SELECTORS.get(target)
+    if not selector:
+        raise TargetNotFoundError(target, "")
+    return selector
+
+
+def _verify_target_visible(page: Page, target: str) -> None:
+    selector = _resolve_selector(target)
+    locator = page.locator(selector).first
+    try:
+        locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
+    except PlaywrightTimeoutError as exc:
+        raise TargetNotFoundError(target, selector) from exc
+
+    if locator.count() == 0:
+        raise TargetNotFoundError(target, selector)
+
+
+def _execute_action(
+    page: Page,
+    action: dict,
+    url: str,
+    screenshot_path: Path,
+) -> int | None:
+    action_type = action["action"]
+    http_status: int | None = None
+
+    if action_type == "open_page":
+        response = page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        http_status = response.status if response else 0
+    elif action_type == "wait":
+        page.wait_for_timeout(int(action.get("ms", 1000)))
+    elif action_type == "verify_visible":
+        _verify_target_visible(page, action["target"])
+    elif action_type == "verify_text":
+        if "text" in action:
+            page.get_by_text(action["text"]).wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
+        elif "target" in action:
+            _verify_target_visible(page, action["target"])
+    elif action_type == "capture":
+        page.screenshot(path=str(screenshot_path), full_page=False)
+
+    return http_status
+
+
+def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) -> dict:
     run_id = str(uuid.uuid4())
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
     screenshot_filename = f"{run_id}.png"
     screenshot_path = STORAGE_DIR / screenshot_filename
+    screenshot_rel = ""
 
+    step_names = [_step_name(action) for action in plan]
+    analyzer = TestAnalyzer(step_names)
     start = time.perf_counter()
-    last_error: PlaywrightRunError | None = None
 
-    for attempt in range(2):
-        browser = None
-        try:
-            with sync_playwright() as playwright:
-                try:
-                    browser = playwright.chromium.launch(headless=True)
-                except Exception as exc:
-                    raise PlaywrightRunError(
-                        f"Failed to launch browser: {exc}",
-                        "browser_launch_failure",
-                    ) from exc
+    title = ""
+    final_url = url
+    http_status = 0
+    browser = None
+    page = None
+    js_errors: list[str] = []
+    abort_execution = False
 
-                try:
-                    page = browser.new_page()
-                    response = page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
+    try:
+        with sync_playwright() as playwright:
+            browser = None
+            try:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.on("pageerror", lambda error: js_errors.append(str(error)))
 
-                    title = page.title()
-                    final_url = page.url
-                    http_status = response.status if response else 0
+                for index, action in enumerate(plan, start=1):
+                    if abort_execution:
+                        break
 
-                    page.screenshot(path=str(screenshot_path), full_page=False)
-                except PlaywrightTimeoutError as exc:
-                    raise PlaywrightRunError(
-                        "Page load timed out after 30 seconds.",
-                        "timeout",
-                    ) from exc
-                except PlaywrightError as exc:
-                    message = str(exc)
-                    if "net::ERR" in message or "NS_ERROR" in message:
-                        raise PlaywrightRunError(
-                            f"Could not reach URL ({message.splitlines()[0]}): {url}",
-                            "invalid_url",
-                        ) from exc
-                    raise PlaywrightRunError(message, "execution_error") from exc
-                finally:
-                    if browser:
-                        browser.close()
+                    step_id = str(index)
+                    step_label = step_names[index - 1]
+                    analyzer.start_step(step_id, step_label)
 
-            duration_ms = int((time.perf_counter() - start) * 1000)
+                    try:
+                        result_status = _execute_action(page, action, url, screenshot_path)
+                        if result_status is not None:
+                            http_status = result_status
+                            final_url = page.url
+                        if action["action"] == "capture" and screenshot_path.exists():
+                            screenshot_rel = f"/storage/screenshots/{screenshot_filename}"
+                        analyzer.complete_step("passed")
+                    except TargetNotFoundError as exc:
+                        analyzer.complete_step("failed")
+                        analyzer.add_failure(
+                            "javascript_error",
+                            str(exc),
+                            "medium",
+                        )
+                    except PlaywrightTimeoutError:
+                        if action["action"] == "open_page":
+                            analyzer.complete_step("failed")
+                            analyzer.add_failure(
+                                "timeout",
+                                f"Timed out while executing '{step_label}'.",
+                                "high",
+                            )
+                            analyzer.skip_remaining_steps()
+                            abort_execution = True
+                        else:
+                            analyzer.complete_step("failed")
+                            analyzer.add_failure(
+                                "timeout",
+                                f"Timed out while executing '{step_label}'.",
+                                "medium",
+                            )
+                    except PlaywrightError as exc:
+                        analyzer.complete_step("failed")
+                        message = str(exc).splitlines()[0]
+                        if action["action"] == "open_page" or "net::ERR" in str(exc) or "NS_ERROR" in str(exc):
+                            analyzer.add_failure(
+                                "navigation_error",
+                                f"Could not complete '{step_label}': {message}",
+                                "high",
+                            )
+                            analyzer.skip_remaining_steps()
+                            abort_execution = True
+                        else:
+                            analyzer.add_failure(
+                                "javascript_error",
+                                f"Action '{step_label}' failed: {message}",
+                                "medium",
+                            )
+                    except Exception as exc:
+                        analyzer.complete_step("failed")
+                        analyzer.add_failure(
+                            "javascript_error",
+                            f"Action '{step_label}' failed: {exc}",
+                            "medium",
+                        )
 
-            return {
-                "ok": True,
-                "data": {
-                    "id": run_id,
-                    "status": "success",
-                    "title": title,
-                    "url": final_url,
-                    "http_status": http_status,
-                    "duration_ms": duration_ms,
-                    "screenshot": f"/storage/screenshots/{screenshot_filename}",
-                },
-            }
-        except PlaywrightRunError as exc:
-            last_error = exc
-            if exc.error_type != "invalid_url" or attempt == 1:
-                return {
-                    "ok": False,
-                    "error_type": exc.error_type,
-                    "message": exc.message,
-                }
-            time.sleep(1)
+                if page and not abort_execution:
+                    try:
+                        title = page.title()
+                        final_url = page.url
+                    except PlaywrightError:
+                        pass
 
-    return {
-        "ok": False,
-        "error_type": last_error.error_type if last_error else "execution_error",
-        "message": last_error.message if last_error else "Test execution failed.",
-    }
+                for js_error in js_errors:
+                    analyzer.add_failure("javascript_error", js_error, "low")
+
+                analyzer.check_http_status(http_status)
+                if "capture" not in [step["action"] for step in plan]:
+                    analyzer.check_screenshot(screenshot_rel)
+            finally:
+                if browser:
+                    browser.close()
+
+    except Exception as exc:
+        if not analyzer.steps:
+            analyzer.start_step("1", step_names[0] if step_names else "open_page")
+            analyzer.complete_step("failed")
+        analyzer.add_failure(
+            "navigation_error",
+            f"Browser crashed during execution: {exc}",
+            "high",
+        )
+        analyzer.skip_remaining_steps()
+
+    return analyzer.build_result(
+        run_id=run_id,
+        goal=goal,
+        title=title,
+        url=final_url,
+        http_status=http_status,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        screenshot=screenshot_rel,
+        ai_plan=plan,
+        ai_plan_source=ai_plan_source,
+    )
 
 
 async def run_test(url: str, goal: str) -> dict:
     import asyncio
 
+    plan_data = await asyncio.to_thread(generate_test_plan, url, goal)
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(_executor, _execute_sync, url, goal)
-
-    if not result["ok"]:
-        raise PlaywrightRunError(result["message"], result["error_type"])
-
-    return result["data"]
+    return await loop.run_in_executor(
+        _executor,
+        _execute_sync,
+        url,
+        goal,
+        plan_data["plan"],
+        plan_data["source"],
+    )
