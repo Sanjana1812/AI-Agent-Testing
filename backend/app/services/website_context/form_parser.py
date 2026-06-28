@@ -1,0 +1,69 @@
+"""Extracts forms and their fields from the page."""
+
+from __future__ import annotations
+
+import logging
+
+from playwright.sync_api import Page
+
+from app.services.website_context.json_builder import FormField, FormInfo
+
+logger = logging.getLogger(__name__)
+
+_FORMS_SCRIPT = """
+() => {
+  const forms = [];
+
+  document.querySelectorAll('form').forEach((form) => {
+    const fields = [];
+    const seen = new Set();
+
+    form.querySelectorAll('input, textarea, select').forEach((field) => {
+      const type = (field.getAttribute('type') || field.tagName.toLowerCase()).toLowerCase();
+      if (type === 'hidden') return;
+      const name = field.getAttribute('name') || field.getAttribute('id') || '';
+      const placeholder = field.getAttribute('placeholder') || '';
+      const required = field.required || field.getAttribute('aria-required') === 'true';
+      const key = type + '|' + name + '|' + placeholder;
+      if (seen.has(key)) return;
+      seen.add(key);
+      fields.push({ type, name, placeholder, required });
+    });
+
+    forms.push({
+      action: form.getAttribute('action') || '',
+      method: (form.getAttribute('method') || 'get').toLowerCase(),
+      fields,
+    });
+  });
+
+  return forms;
+}
+"""
+
+
+def parse(page: Page) -> list[FormInfo]:
+    """Return forms with action, method, and field metadata."""
+    logger.debug("[ContextEngine] Parsing forms")
+    raw_forms = page.evaluate(_FORMS_SCRIPT)
+    forms: list[FormInfo] = []
+
+    for item in raw_forms:
+        fields = [
+            FormField(
+                type=str(field.get("type", "")),
+                name=str(field.get("name", "")),
+                placeholder=str(field.get("placeholder", "")),
+                required=bool(field.get("required", False)),
+            )
+            for field in item.get("fields", [])
+        ]
+        forms.append(
+            FormInfo(
+                action=str(item.get("action", "")),
+                method=str(item.get("method", "get")),
+                fields=fields,
+            )
+        )
+
+    return forms

@@ -36,19 +36,24 @@ class TestAnalyzer:
     def start_step(self, step_id: str, step: str) -> None:
         self._active = StepTimer(step_id=step_id, step=step)
 
-    def complete_step(self, status: StepStatus = "passed") -> None:
+    def complete_step(
+        self,
+        status: StepStatus = "passed",
+        assertions: list[dict] | None = None,
+    ) -> None:
         if not self._active:
             return
 
         duration_ms = int((time.perf_counter() - self._active.started_at) * 1000)
-        self.steps.append(
-            {
-                "id": self._active.step_id,
-                "step": self._active.step,
-                "status": status,
-                "duration_ms": duration_ms,
-            }
-        )
+        step_data: dict = {
+            "id": self._active.step_id,
+            "step": self._active.step,
+            "status": status,
+            "duration_ms": duration_ms,
+        }
+        if assertions is not None:
+            step_data["assertions"] = assertions
+        self.steps.append(step_data)
         self._active = None
 
     def skip_remaining_steps(self) -> None:
@@ -62,6 +67,7 @@ class TestAnalyzer:
                         "step": step_name,
                         "status": "skipped",
                         "duration_ms": 0,
+                        "assertions": [],
                     }
                 )
 

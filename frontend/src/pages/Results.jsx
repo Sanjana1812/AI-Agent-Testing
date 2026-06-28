@@ -5,9 +5,11 @@ const STEP_LABELS = {
   open_page: 'Open Page',
   wait: 'Wait',
   click: 'Click',
+  scroll: 'Scroll',
   fill: 'Fill',
   verify_visible: 'Verify Visible',
   verify_text: 'Verify Text',
+  verify_form: 'Verify Form',
   capture: 'Capture Screenshot',
 }
 
@@ -23,6 +25,7 @@ function formatPlanStep(step, index) {
   const details = []
   if (step.target) details.push(`target: ${step.target}`)
   if (step.text) details.push(`text: "${step.text}"`)
+  if (step.value) details.push(`value: "${step.value}"`)
   if (step.ms) details.push(`${step.ms}ms`)
   return {
     title: `Step ${index + 1}: ${action}`,

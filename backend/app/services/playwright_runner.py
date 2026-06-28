@@ -9,6 +9,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from app.services.ai_planner import generate_test_plan
+from app.services.assertions import AssertionContext, AssertionEngine
 from app.services.semantic_targets import SEMANTIC_TARGET_SELECTORS
 from app.services.test_analyzer import TestAnalyzer
 
@@ -35,7 +36,10 @@ class TargetNotFoundError(Exception):
 def _step_name(action: dict) -> str:
     act = action["action"]
     if "target" in action:
-        return f"{act}:{action['target']}"
+        name = f"{act}:{action['target']}"
+        if act == "fill" and "value" in action:
+            return f"{name}"
+        return name
     if "text" in action:
         return f"{act}:{action['text']}"
     if act == "wait":
@@ -50,16 +54,55 @@ def _resolve_selector(target: str) -> str:
     return selector
 
 
-def _verify_target_visible(page: Page, target: str) -> None:
+def _locator(page: Page, target: str):
     selector = _resolve_selector(target)
-    locator = page.locator(selector).first
+    return page.locator(selector).first, selector
+
+
+def _verify_target_visible(page: Page, target: str) -> None:
+    locator, selector = _locator(page, target)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
     except PlaywrightTimeoutError as exc:
         raise TargetNotFoundError(target, selector) from exc
 
-    if locator.count() == 0:
-        raise TargetNotFoundError(target, selector)
+
+def _click_target(page: Page, target: str) -> None:
+    locator, selector = _locator(page, target)
+    try:
+        locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
+        locator.click(timeout=TARGET_TIMEOUT_MS)
+    except PlaywrightTimeoutError as exc:
+        raise TargetNotFoundError(target, selector) from exc
+
+
+def _fill_target(page: Page, target: str, value: str) -> None:
+    locator, selector = _locator(page, target)
+    try:
+        locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
+        locator.fill(value, timeout=TARGET_TIMEOUT_MS)
+    except PlaywrightTimeoutError as exc:
+        raise TargetNotFoundError(target, selector) from exc
+
+
+def _scroll_target(page: Page, target: str) -> None:
+    locator, selector = _locator(page, target)
+    try:
+        locator.scroll_into_view_if_needed(timeout=TARGET_TIMEOUT_MS)
+        page.wait_for_timeout(500)
+    except PlaywrightTimeoutError as exc:
+        raise TargetNotFoundError(target, selector) from exc
+
+
+def _verify_form(page: Page, target: str) -> None:
+    locator, selector = _locator(page, target)
+    try:
+        locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
+        input_count = locator.locator("input, textarea, select").count()
+        if input_count == 0:
+            raise TargetNotFoundError(target, selector)
+    except PlaywrightTimeoutError as exc:
+        raise TargetNotFoundError(target, selector) from exc
 
 
 def _execute_action(
@@ -76,13 +119,18 @@ def _execute_action(
         http_status = response.status if response else 0
     elif action_type == "wait":
         page.wait_for_timeout(int(action.get("ms", 1000)))
+    elif action_type == "click":
+        _click_target(page, action["target"])
+    elif action_type == "scroll":
+        _scroll_target(page, action["target"])
+    elif action_type == "fill":
+        _fill_target(page, action["target"], action.get("value", ""))
     elif action_type == "verify_visible":
         _verify_target_visible(page, action["target"])
+    elif action_type == "verify_form":
+        _verify_form(page, action["target"])
     elif action_type == "verify_text":
-        if "text" in action:
-            page.get_by_text(action["text"]).wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
-        elif "target" in action:
-            _verify_target_visible(page, action["target"])
+        page.get_by_text(action["text"]).wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
     elif action_type == "capture":
         page.screenshot(path=str(screenshot_path), full_page=False)
 
@@ -99,6 +147,7 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
 
     step_names = [_step_name(action) for action in plan]
     analyzer = TestAnalyzer(step_names)
+    assertion_engine = AssertionEngine()
     start = time.perf_counter()
 
     title = ""
@@ -124,6 +173,8 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
                     step_id = str(index)
                     step_label = step_names[index - 1]
                     analyzer.start_step(step_id, step_label)
+                    step_start = time.perf_counter()
+                    action_failed = False
 
                     try:
                         result_status = _execute_action(page, action, url, screenshot_path)
@@ -132,8 +183,8 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
                             final_url = page.url
                         if action["action"] == "capture" and screenshot_path.exists():
                             screenshot_rel = f"/storage/screenshots/{screenshot_filename}"
-                        analyzer.complete_step("passed")
                     except TargetNotFoundError as exc:
+                        action_failed = True
                         analyzer.complete_step("failed")
                         analyzer.add_failure(
                             "javascript_error",
@@ -141,6 +192,7 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
                             "medium",
                         )
                     except PlaywrightTimeoutError:
+                        action_failed = True
                         if action["action"] == "open_page":
                             analyzer.complete_step("failed")
                             analyzer.add_failure(
@@ -158,6 +210,7 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
                                 "medium",
                             )
                     except PlaywrightError as exc:
+                        action_failed = True
                         analyzer.complete_step("failed")
                         message = str(exc).splitlines()[0]
                         if action["action"] == "open_page" or "net::ERR" in str(exc) or "NS_ERROR" in str(exc):
@@ -175,12 +228,32 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
                                 "medium",
                             )
                     except Exception as exc:
+                        action_failed = True
                         analyzer.complete_step("failed")
                         analyzer.add_failure(
                             "javascript_error",
                             f"Action '{step_label}' failed: {exc}",
                             "medium",
                         )
+
+                    if not action_failed:
+                        action_duration_ms = int((time.perf_counter() - step_start) * 1000)
+                        assertion_ctx = AssertionContext(
+                            page=page,
+                            action=action,
+                            url=url,
+                            http_status=http_status if action["action"] == "open_page" else None,
+                            action_duration_ms=action_duration_ms,
+                            screenshot_path=screenshot_path if action["action"] == "capture" else None,
+                        )
+                        assertion_results = assertion_engine.run_for_action(assertion_ctx)
+
+                        if assertion_engine.all_passed(assertion_results):
+                            analyzer.complete_step("passed", assertions=assertion_results)
+                        else:
+                            analyzer.complete_step("failed", assertions=assertion_results)
+                            for reason in assertion_engine.failure_reasons(assertion_results):
+                                analyzer.add_failure("assertion_failure", reason, "medium")
 
                 if page and not abort_execution:
                     try:
@@ -225,10 +298,23 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
 
 async def run_test(url: str, goal: str) -> dict:
     import asyncio
+    import logging
 
-    plan_data = await asyncio.to_thread(generate_test_plan, url, goal)
+    from app.services.website_context import ContextService
+    from app.services.website_context.json_builder import empty_context
+
+    logger = logging.getLogger(__name__)
+
+    plan_data = await generate_test_plan(url, goal)
+
+    try:
+        website_context = await ContextService().extract_async(url)
+    except Exception as exc:
+        logger.warning("[Runner] Website context extraction failed: %s", exc)
+        website_context = empty_context()
+
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
+    result = await loop.run_in_executor(
         _executor,
         _execute_sync,
         url,
@@ -236,3 +322,6 @@ async def run_test(url: str, goal: str) -> dict:
         plan_data["plan"],
         plan_data["source"],
     )
+    result["_website_context"] = website_context
+    result["_source_url"] = url
+    return result

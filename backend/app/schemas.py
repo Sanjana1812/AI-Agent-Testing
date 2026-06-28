@@ -10,7 +10,17 @@ class PlanStep(BaseModel):
     action: str
     target: str | None = None
     text: str | None = None
+    value: str | None = None
     ms: int | None = None
+
+
+class AssertionResult(BaseModel):
+    type: str
+    expected: str
+    actual: str
+    passed: bool
+    reason: str | None = None
+    duration_ms: int = 0
 
 
 class ExecutionStep(BaseModel):
@@ -18,6 +28,7 @@ class ExecutionStep(BaseModel):
     step: str
     status: str
     duration_ms: int
+    assertions: list[AssertionResult] = Field(default_factory=list)
 
 
 class ExecutionFailure(BaseModel):

@@ -1,0 +1,146 @@
+﻿.\.venv\Scripts\python : [AssertionEngine] form_has_fields raised: Locator.wait_for: Timeout 5000ms exceeded.
+At C:\Users\Admin\AppData\Local\Temp\ps-script-708384eb-dbbf-46e9-bd93-8672962458c5.ps1:106 char:79
++ ... ONPATH="."; .\.venv\Scripts\python scripts\sprint3_audit.py 2>&1 | Ou ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([AssertionEngin...000ms exceeded.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Call log:
+  - waiting for locator("form").first to be visible
+
+[Planner] Ollama plan parsing failed: Unsupported action: submit
+[Planner] Ollama plan parsing failed: Unsupported action: submit
+[RunPersistence] Failed to save run x: db down
+Traceback (most recent call last):
+  File "C:\Users\Admin\Desktop\AI Testing Platform\backend\app\services\run_persistence.py", line 35, in persist
+    run = self.repository.save_execution(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1124, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1128, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\unittest\mock.py", line 1183, in _execute_mock_call
+    raise effect
+RuntimeError: db down
+
+============================================================
+1. WEBSITE CONTEXT ENGINE
+============================================================
+{
+  "passed": [
+    "Website Context schema keys match",
+    "Full extract schema valid",
+    "Metadata extraction fields present",
+    "Navigation extraction on playwright.dev",
+    "Heading extraction on playwright.dev",
+    "Button extraction on playwright.dev",
+    "Link extraction on playwright.dev",
+    "Section extraction on playwright.dev",
+    "Parser isolation: other parsers run when one fails"
+  ],
+  "failed": [],
+  "warnings": []
+}
+
+============================================================
+2. ASSERTION ENGINE
+============================================================
+{
+  "passed": [
+    "Assertion element_exists returns full result shape",
+    "Assertion element_visible returns full result shape",
+    "Assertion text_contains returns full result shape",
+    "Assertion url_host_matches returns full result shape",
+    "Assertion http_status returns full result shape",
+    "Assertion page_title returns full result shape",
+    "Assertion page_load_time returns full result shape",
+    "Assertion form_has_fields_fail returns full result shape",
+    "Screenshot assertion passes when file exists",
+    "Failed assertion returns reason without raising"
+  ],
+  "failed": [],
+  "warnings": [
+    "text_equals and url_equals implemented but not used by AssertionEngine"
+  ]
+}
+
+============================================================
+4-6. PERSISTENCE + PERFORMANCE (5 runs)
+============================================================
+{
+  "passed": [
+    "Run 2: screenshot on disk + DB",
+    "Run 3: screenshot on disk + DB",
+    "Run 4: screenshot on disk + DB",
+    "Run 5: screenshot on disk + DB",
+    "Completed 5 full executions with persistence"
+  ],
+  "failed": [],
+  "warnings": [],
+  "metrics": {
+    "avg_execution_ms": 59696,
+    "avg_persistence_ms": 15,
+    "min_execution_ms": 53679,
+    "max_execution_ms": 65716
+  }
+}
+
+============================================================
+3. DATABASE
+============================================================
+{
+  "passed": [
+    "All 5 tables exist",
+    "No orphan records detected",
+    "Test runs in DB: 6"
+  ],
+  "failed": [],
+  "warnings": [
+    "Foreign keys pragma off in audit connection"
+  ]
+}
+
+============================================================
+7. ERROR HANDLING
+============================================================
+{
+  "passed": [
+    "Persistence failure returns None without crash",
+    "Assertion failures mark step failed without crashing runner (verified in integration)"
+  ],
+  "failed": [],
+  "warnings": [
+    "Parser failure at ContextService level raises CrawlError/exceptions to caller"
+  ]
+}
+
+============================================================
+8. CODE QUALITY
+============================================================
+{
+  "passed": [
+    "Single test_analyzer module",
+    "No circular import on main/playwright_runner import",
+    "Repository pattern consistent across 5 entity repos + RunHistoryRepository"
+  ],
+  "failed": [],
+  "warnings": [
+    "entities.py imports unused _BACKEND_ROOT",
+    "url_assertion.assert_url_equals / text_assertion.assert_text_equals unused in engine",
+    "Persistence failure silent to API client (logged only)"
+  ]
+}
+
+============================================================
+9. API CONTRACT
+============================================================
+{
+  "passed": [
+    "POST /run response schema unchanged",
+    "ExecutionStep.assertions added with default (backward compatible)"
+  ],
+  "failed": [],
+  "warnings": []
+}
