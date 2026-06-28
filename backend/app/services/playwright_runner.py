@@ -27,18 +27,21 @@ class PlaywrightRunError(Exception):
 
 
 class TargetNotFoundError(Exception):
-    def __init__(self, target: str, selector: str):
+    def __init__(self, target: str, selector: str, label: str | None = None):
         self.target = target
         self.selector = selector
+        self.label = label
         super().__init__(f"Target '{target}' not found using selector '{selector}'")
 
 
 def _step_name(action: dict) -> str:
     act = action["action"]
+    if action.get("label"):
+        return f"{act}:{action['label']}"
     if "target" in action:
         name = f"{act}:{action['target']}"
         if act == "fill" and "value" in action:
-            return f"{name}"
+            return name
         return name
     if "text" in action:
         return f"{act}:{action['text']}"
@@ -50,59 +53,72 @@ def _step_name(action: dict) -> str:
 def _resolve_selector(target: str) -> str:
     selector = SEMANTIC_TARGET_SELECTORS.get(target)
     if not selector:
-        raise TargetNotFoundError(target, "")
+        raise TargetNotFoundError(target, "", target)
     return selector
 
 
-def _locator(page: Page, target: str):
+def _locator(page: Page, action: dict):
+    if action.get("selector"):
+        selector = str(action["selector"])
+        return page.locator(selector).first, selector
+    target = action["target"]
     selector = _resolve_selector(target)
     return page.locator(selector).first, selector
 
 
-def _verify_target_visible(page: Page, target: str) -> None:
-    locator, selector = _locator(page, target)
+def _failure_metadata(action: dict, exc: Exception, context_summary: dict | None) -> dict:
+    selector = getattr(exc, "selector", None) or action.get("selector")
+    return {
+        "expected_element": action.get("label") or action.get("target") or action.get("text"),
+        "selector": selector,
+        "available_context": context_summary,
+    }
+
+
+def _verify_target_visible(page: Page, action: dict) -> None:
+    locator, selector = _locator(page, action)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
     except PlaywrightTimeoutError as exc:
-        raise TargetNotFoundError(target, selector) from exc
+        raise TargetNotFoundError(action.get("target", ""), selector, action.get("label")) from exc
 
 
-def _click_target(page: Page, target: str) -> None:
-    locator, selector = _locator(page, target)
+def _click_target(page: Page, action: dict) -> None:
+    locator, selector = _locator(page, action)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
         locator.click(timeout=TARGET_TIMEOUT_MS)
     except PlaywrightTimeoutError as exc:
-        raise TargetNotFoundError(target, selector) from exc
+        raise TargetNotFoundError(action.get("target", ""), selector, action.get("label")) from exc
 
 
-def _fill_target(page: Page, target: str, value: str) -> None:
-    locator, selector = _locator(page, target)
+def _fill_target(page: Page, action: dict, value: str) -> None:
+    locator, selector = _locator(page, action)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
         locator.fill(value, timeout=TARGET_TIMEOUT_MS)
     except PlaywrightTimeoutError as exc:
-        raise TargetNotFoundError(target, selector) from exc
+        raise TargetNotFoundError(action.get("target", ""), selector, action.get("label")) from exc
 
 
-def _scroll_target(page: Page, target: str) -> None:
-    locator, selector = _locator(page, target)
+def _scroll_target(page: Page, action: dict) -> None:
+    locator, selector = _locator(page, action)
     try:
         locator.scroll_into_view_if_needed(timeout=TARGET_TIMEOUT_MS)
         page.wait_for_timeout(500)
     except PlaywrightTimeoutError as exc:
-        raise TargetNotFoundError(target, selector) from exc
+        raise TargetNotFoundError(action.get("target", ""), selector, action.get("label")) from exc
 
 
-def _verify_form(page: Page, target: str) -> None:
-    locator, selector = _locator(page, target)
+def _verify_form(page: Page, action: dict) -> None:
+    locator, selector = _locator(page, action)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
         input_count = locator.locator("input, textarea, select").count()
         if input_count == 0:
-            raise TargetNotFoundError(target, selector)
+            raise TargetNotFoundError(action.get("target", ""), selector, action.get("label"))
     except PlaywrightTimeoutError as exc:
-        raise TargetNotFoundError(target, selector) from exc
+        raise TargetNotFoundError(action.get("target", ""), selector, action.get("label")) from exc
 
 
 def _execute_action(
@@ -120,15 +136,15 @@ def _execute_action(
     elif action_type == "wait":
         page.wait_for_timeout(int(action.get("ms", 1000)))
     elif action_type == "click":
-        _click_target(page, action["target"])
+        _click_target(page, action)
     elif action_type == "scroll":
-        _scroll_target(page, action["target"])
+        _scroll_target(page, action)
     elif action_type == "fill":
-        _fill_target(page, action["target"], action.get("value", ""))
+        _fill_target(page, action, action.get("value", ""))
     elif action_type == "verify_visible":
-        _verify_target_visible(page, action["target"])
+        _verify_target_visible(page, action)
     elif action_type == "verify_form":
-        _verify_form(page, action["target"])
+        _verify_form(page, action)
     elif action_type == "verify_text":
         page.get_by_text(action["text"]).wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
     elif action_type == "capture":
@@ -137,7 +153,13 @@ def _execute_action(
     return http_status
 
 
-def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) -> dict:
+def _execute_sync(
+    url: str,
+    goal: str,
+    plan: list[dict],
+    ai_plan_source: str,
+    context_summary: dict | None = None,
+) -> dict:
     run_id = str(uuid.uuid4())
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -187,9 +209,10 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
                         action_failed = True
                         analyzer.complete_step("failed")
                         analyzer.add_failure(
-                            "javascript_error",
+                            "element_not_found",
                             str(exc),
                             "medium",
+                            **_failure_metadata(action, exc, context_summary),
                         )
                     except PlaywrightTimeoutError:
                         action_failed = True
@@ -253,7 +276,14 @@ def _execute_sync(url: str, goal: str, plan: list[dict], ai_plan_source: str) ->
                         else:
                             analyzer.complete_step("failed", assertions=assertion_results)
                             for reason in assertion_engine.failure_reasons(assertion_results):
-                                analyzer.add_failure("assertion_failure", reason, "medium")
+                                analyzer.add_failure(
+                                    "assertion_failure",
+                                    reason,
+                                    "medium",
+                                    expected_element=action.get("label") or action.get("target"),
+                                    selector=action.get("selector"),
+                                    available_context=context_summary,
+                                )
 
                 if page and not abort_execution:
                     try:
@@ -300,18 +330,20 @@ async def run_test(url: str, goal: str) -> dict:
     import asyncio
     import logging
 
+    from app.services.planner.context_index import ContextIndex
     from app.services.website_context import ContextService
     from app.services.website_context.json_builder import empty_context
 
     logger = logging.getLogger(__name__)
-
-    plan_data = await generate_test_plan(url, goal)
 
     try:
         website_context = await ContextService().extract_async(url)
     except Exception as exc:
         logger.warning("[Runner] Website context extraction failed: %s", exc)
         website_context = empty_context()
+
+    context_summary = ContextIndex(website_context).summary()
+    plan_data = await generate_test_plan(url, goal, website_context)
 
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
@@ -321,7 +353,10 @@ async def run_test(url: str, goal: str) -> dict:
         goal,
         plan_data["plan"],
         plan_data["source"],
+        context_summary,
     )
+    if plan_data.get("metadata"):
+        result["ai_plan_metadata"] = plan_data["metadata"]
     result["_website_context"] = website_context
     result["_source_url"] = url
     return result

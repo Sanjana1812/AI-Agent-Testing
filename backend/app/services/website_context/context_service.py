@@ -21,6 +21,7 @@ from app.services.website_context import (
     section_parser,
 )
 from app.services.website_context.crawler import CrawlError, crawl
+from app.services.website_context.context_enricher import enrich
 from app.services.website_context.json_builder import WebsiteContext, empty_context, merge_partial
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,9 @@ class ContextService:
             len(context["footer"]),
             len(context["links"]),
         )
-        return context
+        enriched = enrich(context)
+        logger.info("[ContextService] Context enriched with classification and priority scores")
+        return enriched
 
     async def extract_async(self, url: str) -> WebsiteContext:
         """Async wrapper suitable for FastAPI — runs sync Playwright in a process pool."""

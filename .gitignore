@@ -1,14 +1,53 @@
+# ==========================
 # Python
+# ==========================
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+
 .venv/
 .env
-backend/storage/screenshots/*.png
+.pytest_cache/
 
+# ==========================
+# Database
+# ==========================
+*.db
+*.sqlite
+*.sqlite3
+
+backend/storage/*.db
+backend/storage/*.sqlite
+backend/storage/*.sqlite3
+
+# ==========================
+# Screenshots & Generated Files
+# ==========================
+backend/storage/screenshots/*.png
+backend/storage/screenshots/*.jpg
+backend/storage/screenshots/*.jpeg
+
+# Optional (future)
+backend/storage/reports/
+backend/storage/uploads/
+
+# ==========================
 # Node
+# ==========================
 node_modules/
 dist/
+coverage/
 
+# ==========================
+# IDE
+# ==========================
+.vscode/
+.idea/
+
+# ==========================
 # OS
+# ==========================
 .DS_Store
 Thumbs.db

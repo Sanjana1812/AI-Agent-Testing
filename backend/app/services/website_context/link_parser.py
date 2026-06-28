@@ -13,6 +13,25 @@ logger = logging.getLogger(__name__)
 
 _LINKS_SCRIPT = """
 (pageOrigin) => {
+  const escape = (value) => value.replace(/([!"#$%&'()*+,./:;<=>?@[\\\\\\]^`{|}~])/g, '\\\\$1');
+  const buildSelector = (el) => {
+    const href = el.getAttribute('href') || el.href || '';
+    if (href) return `a[href="${href.replace(/"/g, '\\\\"')}"]`;
+    if (el.id) return `#${escape(el.id)}`;
+    return 'a';
+  };
+  const isVisible = (el) => {
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const detectSection = (el) => {
+    if (el.closest('footer, [role="contentinfo"], .footer, #footer')) return 'footer';
+    if (el.closest('aside, [role="complementary"]')) return 'sidebar';
+    if (el.closest('header, nav, [role="navigation"], [role="banner"]')) return 'header';
+    return 'body';
+  };
+
   const seen = new Set();
   const links = [];
 
@@ -25,14 +44,25 @@ _LINKS_SCRIPT = """
     seen.add(key);
 
     let internal = false;
+    let external = false;
     try {
       const url = new URL(href, window.location.href);
       internal = url.origin === pageOrigin || href.startsWith('/') || href.startsWith('#');
+      external = !internal;
     } catch {
       internal = href.startsWith('/') || href.startsWith('#');
+      external = !internal;
     }
 
-    links.push({ text, href, internal });
+    links.push({
+      text,
+      href,
+      internal,
+      external,
+      selector: buildSelector(anchor),
+      visible: isVisible(anchor),
+      section: detectSection(anchor),
+    });
   });
 
   return links;
@@ -41,7 +71,7 @@ _LINKS_SCRIPT = """
 
 
 def parse(page: Page) -> list[AnchorLink]:
-    """Return all anchor links with internal/external classification."""
+    """Return all anchor links with semantic metadata."""
     logger.debug("[ContextEngine] Parsing anchor links")
     origin = urlparse(page.url).netloc
     page_origin = f"{urlparse(page.url).scheme}://{origin}" if origin else page.url
@@ -52,6 +82,10 @@ def parse(page: Page) -> list[AnchorLink]:
             text=str(item.get("text", "")),
             href=str(item.get("href", "")),
             internal=bool(item.get("internal", False)),
+            selector=str(item.get("selector", "")),
+            visible=bool(item.get("visible", False)),
+            external=bool(item.get("external", False)),
+            section=str(item.get("section", "body")),
         )
         for item in raw_links
         if item.get("href")

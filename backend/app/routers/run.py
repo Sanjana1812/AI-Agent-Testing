@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas import RunTestRequest, RunTestResponse
+from app.services.failures.failure_enricher import enrich_failures
+from app.services.planner.context_index import ContextIndex
 from app.services.playwright_runner import run_test as execute_test
 from app.services.run_persistence import RunPersistenceService
 
@@ -19,6 +21,8 @@ async def run_test(payload: RunTestRequest, db: Session = Depends(get_db)) -> Ru
 
     website_context = result.pop("_website_context", {})
     source_url = result.pop("_source_url", str(payload.url))
+    context_summary = ContextIndex(website_context).summary() if website_context else None
+    result["failures"] = enrich_failures(result, context_summary)
 
     persisted = RunPersistenceService(db).persist(
         result=result,

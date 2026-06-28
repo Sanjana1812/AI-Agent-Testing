@@ -14,21 +14,37 @@ class PageMetadata(TypedDict, total=False):
     current_url: str
 
 
-class NavigationLink(TypedDict):
+class NavigationLink(TypedDict, total=False):
     text: str
     href: str
+    selector: str
+    visible: bool
+    external: bool
+    section: str
+    priority: int
+    classification: str
 
 
-class Heading(TypedDict):
+class Heading(TypedDict, total=False):
     level: int
     text: str
+    priority: int
+    classification: str
 
 
-class ButtonInfo(TypedDict):
+class ButtonInfo(TypedDict, total=False):
     text: str
     selector: str
     disabled: bool
     visible: bool
+    enabled: bool
+    type: str
+    section: str
+    priority: int
+    role: str
+    classification: str
+    class_name: str
+    tag: str
 
 
 class FormField(TypedDict, total=False):
@@ -38,10 +54,16 @@ class FormField(TypedDict, total=False):
     required: bool
 
 
-class FormInfo(TypedDict):
+class FormInfo(TypedDict, total=False):
     action: str
     method: str
     fields: list[FormField]
+    required: int
+    visible: bool
+    section: str
+    selector: str
+    priority: int
+    classification: str
 
 
 class SectionInfo(TypedDict, total=False):
@@ -50,17 +72,34 @@ class SectionInfo(TypedDict, total=False):
     id: str
     class_name: str
     heading: str
+    semantic_type: str
+    buttons_count: int
+    links_count: int
+    forms_count: int
+    priority: int
 
 
-class FooterLink(TypedDict):
+class FooterLink(TypedDict, total=False):
     text: str
     href: str
+    selector: str
+    visible: bool
+    external: bool
+    section: str
+    priority: int
+    classification: str
 
 
-class AnchorLink(TypedDict):
+class AnchorLink(TypedDict, total=False):
     text: str
     href: str
     internal: bool
+    selector: str
+    visible: bool
+    external: bool
+    section: str
+    priority: int
+    classification: str
 
 
 class WebsiteContext(TypedDict):

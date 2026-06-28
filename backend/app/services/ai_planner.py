@@ -3,10 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 
 from app.config import settings
-from app.services.ollama_client import generate_plan
-from app.services.ollama_health import is_ollama_available
+from app.services.ai.provider_factory import get_ai_provider
+from app.services.planner.context_fallback import build_context_plan
+from app.services.planner.context_index import ContextIndex
+from app.services.planner.context_validator import validate_plan_against_context
+from app.services.planner.display_labels import build_step_label
+from app.services.planner.plan_metadata import build_plan_metadata, compute_validation_score
+from app.services.website_context.json_builder import WebsiteContext, empty_context
 
 logger = logging.getLogger(__name__)
 
@@ -51,23 +57,6 @@ FORBIDDEN_VERIFY_TEXT_INTENTS = frozenset(
     {"flow", "navigation", "login", "signup", "contact", "form", "search", "checkout", "dashboard", "profile", "general"}
 )
 
-INTENTS = (
-    "navigation",
-    "flow",
-    "login",
-    "signup",
-    "contact",
-    "form",
-    "search",
-    "checkout",
-    "dashboard",
-    "profile",
-    "responsive",
-    "accessibility",
-    "performance",
-    "general",
-)
-
 INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "navigation": ("navigation", "navbar", "nav bar", "nav menu", "top menu", "site menu", "menu bar"),
     "flow": ("flow", "journey", "entire website", "whole site", "full site", "user flow", "end to end", "e2e", "website flow"),
@@ -83,6 +72,7 @@ INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
     "accessibility": ("accessibility", "a11y", "wcag", "screen reader", "aria"),
     "performance": ("performance", "page speed", "load time", "loading speed", "lighthouse"),
 }
+
 
 LEGACY_SELECTOR_TO_TARGET = {
     "nav": "navigation",
@@ -146,154 +136,6 @@ def detect_intent(goal: str) -> str:
     return best_intent
 
 
-def _plan(*steps: dict) -> list[dict]:
-    plan = list(steps)
-    if not plan or plan[-1]["action"] != "capture":
-        plan.append({"action": "capture"})
-    return plan[:MAX_STEPS]
-
-
-INTENT_PLANS: dict[str, list[dict]] = {
-    "navigation": _plan(
-        {"action": "open_page"},
-        {"action": "wait", "ms": 800},
-        {"action": "verify_visible", "target": "navigation"},
-        {"action": "click", "target": "link"},
-        {"action": "wait", "ms": 800},
-        {"action": "verify_visible", "target": "header"},
-    ),
-    "flow": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "navigation"},
-        {"action": "verify_visible", "target": "hero"},
-        {"action": "scroll", "target": "section"},
-        {"action": "verify_visible", "target": "section"},
-        {"action": "verify_visible", "target": "footer"},
-    ),
-    "login": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "form"},
-        {"action": "fill", "target": "email", "value": "test@example.com"},
-        {"action": "fill", "target": "password", "value": "password123"},
-        {"action": "click", "target": "submit"},
-        {"action": "wait", "ms": 1000},
-        {"action": "verify_visible", "target": "section"},
-    ),
-    "signup": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "form"},
-        {"action": "verify_form", "target": "form"},
-        {"action": "fill", "target": "email", "value": "user@example.com"},
-        {"action": "fill", "target": "password", "value": "Password123!"},
-        {"action": "click", "target": "submit"},
-        {"action": "wait", "ms": 1000},
-    ),
-    "contact": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "form"},
-        {"action": "verify_form", "target": "form"},
-        {"action": "fill", "target": "input", "value": "QA Tester"},
-        {"action": "fill", "target": "email", "value": "qa@example.com"},
-        {"action": "click", "target": "submit"},
-        {"action": "wait", "ms": 1000},
-    ),
-    "form": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "form"},
-        {"action": "verify_form", "target": "form"},
-        {"action": "fill", "target": "input", "value": "test value"},
-        {"action": "click", "target": "submit"},
-        {"action": "wait", "ms": 800},
-    ),
-    "search": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "input"},
-        {"action": "fill", "target": "input", "value": "test query"},
-        {"action": "click", "target": "button"},
-        {"action": "wait", "ms": 1000},
-        {"action": "verify_visible", "target": "section"},
-    ),
-    "checkout": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "button"},
-        {"action": "click", "target": "button"},
-        {"action": "verify_visible", "target": "form"},
-        {"action": "fill", "target": "email", "value": "buyer@example.com"},
-        {"action": "click", "target": "submit"},
-        {"action": "wait", "ms": 1000},
-    ),
-    "dashboard": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "navigation"},
-        {"action": "verify_visible", "target": "section"},
-        {"action": "verify_visible", "target": "header"},
-        {"action": "click", "target": "link"},
-        {"action": "wait", "ms": 800},
-    ),
-    "profile": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "navigation"},
-        {"action": "click", "target": "link"},
-        {"action": "verify_visible", "target": "form"},
-        {"action": "verify_visible", "target": "section"},
-        {"action": "wait", "ms": 800},
-    ),
-    "responsive": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "navigation"},
-        {"action": "verify_visible", "target": "hero"},
-        {"action": "scroll", "target": "section"},
-        {"action": "verify_visible", "target": "footer"},
-    ),
-    "accessibility": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "navigation"},
-        {"action": "verify_visible", "target": "header"},
-        {"action": "click", "target": "link"},
-        {"action": "verify_visible", "target": "form"},
-        {"action": "wait", "ms": 800},
-    ),
-    "performance": _plan(
-        {"action": "open_page"},
-        {"action": "wait", "ms": 2000},
-        {"action": "verify_visible", "target": "hero"},
-        {"action": "scroll", "target": "section"},
-        {"action": "verify_visible", "target": "footer"},
-    ),
-    "general": _plan(
-        {"action": "open_page"},
-        {"action": "verify_visible", "target": "navigation"},
-        {"action": "verify_visible", "target": "hero"},
-        {"action": "scroll", "target": "section"},
-        {"action": "verify_visible", "target": "footer"},
-    ),
-}
-
-
-def deterministic_fallback(goal: str) -> list[dict]:
-    intent = detect_intent(goal)
-    goal_lower = goal.lower()
-
-    if "hero" in goal_lower and intent not in ("login", "signup", "contact", "form"):
-        return _plan(
-            {"action": "open_page"},
-            {"action": "verify_visible", "target": "hero"},
-            {"action": "verify_visible", "target": "button"},
-            {"action": "verify_visible", "target": "image"},
-        )
-
-    if "footer" in goal_lower and intent not in ("login", "signup"):
-        return _plan(
-            {"action": "open_page"},
-            {"action": "scroll", "target": "footer"},
-            {"action": "verify_visible", "target": "footer"},
-            {"action": "click", "target": "link"},
-            {"action": "wait", "ms": 800},
-        )
-
-    return list(INTENT_PLANS[intent])
-
-
 def _normalize_target(step: dict) -> str | None:
     if "target" in step and step["target"]:
         target = str(step["target"]).strip().lower().replace("-", "_").replace(" ", "_")
@@ -313,6 +155,56 @@ def _normalize_target(step: dict) -> str | None:
         return key if key in ALLOWED_TARGETS else None
 
     return None
+
+
+def _enrich_step_with_context(step: dict, index: ContextIndex) -> dict:
+    """Attach highest-priority selectors and human-readable labels."""
+    enriched = dict(step)
+    action = step.get("action")
+    semantic_target = step.get("target")
+
+    if semantic_target in {"button", "submit"} and not enriched.get("selector"):
+        btn = index.highest_priority_cta()
+        if btn and btn.get("selector"):
+            enriched["selector"] = btn["selector"]
+            text = btn.get("text") or semantic_target
+            if not enriched.get("label"):
+                enriched["label"] = build_step_label({"action": action, "target": semantic_target, "text": text})
+    elif semantic_target == "link" and not enriched.get("selector"):
+        link = index.highest_priority_nav_link() or index.highest_priority_footer_link()
+        if link:
+            enriched["selector"] = link.get("selector") or (
+                f"a[href='{link['href']}']" if link.get("href") else None
+            )
+            if not enriched.get("label"):
+                enriched["label"] = build_step_label(
+                    {"action": action, "target": "link", "text": link.get("text", "link")}
+                )
+    elif semantic_target == "hero" and not enriched.get("label"):
+        heading = index.hero_heading()
+        enriched["label"] = build_step_label(
+            {"action": action, "target": "hero", "text": heading.get("text") if heading else None}
+        )
+    elif semantic_target == "section" and not enriched.get("label"):
+        section = index.highest_priority_section()
+        enriched["label"] = build_step_label(
+            {
+                "action": action,
+                "target": "section",
+                "semantic_type": section.get("semantic_type") if section else None,
+            }
+        )
+    elif semantic_target == "navigation" and not enriched.get("label"):
+        enriched["label"] = build_step_label({"action": action, "target": "navigation"})
+    elif semantic_target == "footer" and not enriched.get("label"):
+        enriched["label"] = build_step_label({"action": action, "target": "footer"})
+    elif semantic_target == "form" and not enriched.get("label"):
+        enriched["label"] = build_step_label({"action": action, "target": "form"})
+
+    if not enriched.get("label"):
+        enriched["label"] = build_step_label(enriched)
+
+    return enriched
 
 
 def _parse_json_response(text: str) -> dict:
@@ -339,8 +231,7 @@ def _meaningful_target_count(plan: list[dict]) -> int:
     for step in plan:
         action = step.get("action")
         if action in {"click", "scroll", "fill", "verify_visible", "verify_form"}:
-            target = step.get("target")
-            if target and target not in GENERIC_TARGETS:
+            if step.get("target") or step.get("selector"):
                 meaningful += 1
     return meaningful
 
@@ -368,7 +259,7 @@ def _is_generic_plan(plan: list[dict], intent: str) -> bool:
     return False
 
 
-def _validate_plan(plan: list, intent: str) -> list:
+def _validate_plan(plan: list, intent: str, index: ContextIndex) -> tuple[list, int]:
     if not plan or not isinstance(plan, list):
         raise ValueError("Plan must be a non-empty list")
 
@@ -389,6 +280,8 @@ def _validate_plan(plan: list, intent: str) -> list:
             text = step.get("text")
             if not text:
                 raise ValueError("verify_text requires text")
+            if not index.supports_text(str(text)):
+                raise ValueError(f"Text '{text}' not found in Website Context")
             entry["text"] = str(text)
             validated.append(entry)
             continue
@@ -397,15 +290,28 @@ def _validate_plan(plan: list, intent: str) -> list:
             target = _normalize_target(step)
             if not target or target not in ALLOWED_TARGETS:
                 raise ValueError(f"Invalid or generic target for {action}: {step}")
+            if not index.supports_target(target):
+                raise ValueError(f"Target '{target}' not found in Website Context")
             entry["target"] = target
+            if step.get("selector"):
+                entry["selector"] = str(step["selector"])
+            if step.get("label"):
+                entry["label"] = str(step["label"])
 
         if action == "fill":
             entry["value"] = str(step.get("value", "test@example.com"))
 
         if action == "wait":
             entry["ms"] = int(step.get("ms", 1000))
+            entry["label"] = build_step_label(entry)
 
-        validated.append(entry)
+        if action == "open_page" and not entry.get("label"):
+            entry["label"] = build_step_label(entry)
+
+        if action == "capture" and not entry.get("label"):
+            entry["label"] = build_step_label(entry)
+
+        validated.append(_enrich_step_with_context(entry, index))
 
     validated = _finalize_plan(validated)
 
@@ -418,28 +324,82 @@ def _validate_plan(plan: list, intent: str) -> list:
     if _is_generic_plan(validated, intent):
         raise ValueError("Plan is too generic")
 
-    return validated
+    context_validated, rejections = validate_plan_against_context(validated, index)
+    if rejections:
+        logger.warning("[Planner] Context rejected %d step(s): %s", len(rejections), rejections)
+    if len(context_validated) < MIN_STEPS:
+        raise ValueError("Too few context-supported steps after validation")
+
+    return _finalize_plan(context_validated), len(rejections)
 
 
-async def generate_test_plan(url: str, goal: str) -> dict:
+def deterministic_fallback(goal: str, index: ContextIndex, intent: str) -> list[dict]:
+    """Build a plan from discovered page elements only."""
+    return build_context_plan(goal, intent, index)
+
+
+async def generate_test_plan(
+    url: str,
+    goal: str,
+    website_context: WebsiteContext | None = None,
+) -> dict:
+    planning_start = time.perf_counter()
+    context = website_context or empty_context()
+    index = ContextIndex(context)
     intent = detect_intent(goal)
-    logger.info("[Planner] Detected intent: %s", intent)
-    logger.info("[Planner] Checking Ollama...")
+    provider = get_ai_provider()
+    source = "fallback"
+    plan: list[dict] = []
+    rejections = 0
+    provider_name = provider.name
 
-    if await is_ollama_available():
-        logger.info("[Planner] Ollama Available")
-        logger.info("[Planner] Generating plan with %s for intent=%s", settings.model_name, intent)
+    logger.info("[Planner] Detected intent: %s", intent)
+    logger.info("[Planner] Context summary: %s", index.summary())
+    logger.info("[Planner] Using AI provider: %s", provider_name)
+
+    if await provider.is_available():
+        logger.info("[Planner] Provider '%s' available", provider_name)
+        logger.info("[Planner] Generating context-aware plan with %s", settings.model_name)
         try:
-            result = await generate_plan(url, goal, intent)
+            result = await provider.generate_plan(
+                url=url,
+                goal=goal,
+                intent=intent,
+                website_context=index.planner_snapshot(),
+            )
             if result.success:
                 data = _parse_json_response(result.text)
-                plan = _validate_plan(data.get("plan", []), intent)
-                return {"plan": plan, "source": "ollama", "intent": intent}
-            logger.warning("[Planner] Ollama generation failed: %s", result.error)
+                plan, rejections = _validate_plan(data.get("plan", []), intent, index)
+                source = result.provider or provider_name
+            else:
+                logger.warning("[Planner] Provider generation failed: %s", result.error)
         except Exception as exc:
-            logger.warning("[Planner] Ollama plan parsing failed: %s", exc)
+            logger.warning("[Planner] Provider plan parsing failed: %s", exc)
     else:
-        logger.warning("[Planner] Ollama unavailable")
+        logger.warning("[Planner] Provider '%s' unavailable", provider_name)
 
-    logger.info("[Planner] Using intent-based fallback for intent=%s", intent)
-    return {"plan": deterministic_fallback(goal), "source": "fallback", "intent": intent}
+    if not plan:
+        logger.info("[Planner] Using context-aware fallback for intent=%s", intent)
+        plan = deterministic_fallback(goal, index, intent)
+        source = "fallback"
+
+    planning_time_ms = int((time.perf_counter() - planning_start) * 1000)
+    validation_score = compute_validation_score(
+        plan_steps=len(plan),
+        min_steps=MIN_STEPS,
+        max_steps=MAX_STEPS,
+        rejections=rejections,
+    )
+    metadata = build_plan_metadata(
+        planner_source=source,
+        planning_time_ms=planning_time_ms,
+        validation_score=validation_score,
+        provider=provider_name,
+    )
+
+    return {
+        "plan": plan,
+        "source": source,
+        "intent": intent,
+        "metadata": metadata,
+    }

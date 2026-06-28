@@ -9,6 +9,8 @@ class RunTestRequest(BaseModel):
 class PlanStep(BaseModel):
     action: str
     target: str | None = None
+    selector: str | None = None
+    label: str | None = None
     text: str | None = None
     value: str | None = None
     ms: int | None = None
@@ -35,6 +37,33 @@ class ExecutionFailure(BaseModel):
     type: str
     message: str
     severity: str
+    expected_element: str | None = None
+    selector: str | None = None
+    available_context: dict | None = None
+    step_id: str | None = None
+    action: str | None = None
+    target: str | None = None
+    expected: str | None = None
+    actual: str | None = None
+    exception_type: str | None = None
+    current_url: str | None = None
+    page_title: str | None = None
+    planner_source: str | None = None
+    screenshot_path: str | None = None
+    assertion_results: list[AssertionResult] = Field(default_factory=list)
+    website_context_summary: dict | None = None
+    timestamp: str | None = None
+    category: str | None = None
+
+
+class PlannerMetadata(BaseModel):
+    planner_source: str
+    planner_version: str
+    context_version: str
+    generated_at: str
+    validation_score: float
+    planning_time_ms: int
+    provider: str | None = None
 
 
 class ExecutionSummary(BaseModel):
@@ -58,3 +87,4 @@ class RunTestResponse(BaseModel):
     steps: list[ExecutionStep]
     failures: list[ExecutionFailure]
     summary: ExecutionSummary
+    ai_plan_metadata: PlannerMetadata | None = None

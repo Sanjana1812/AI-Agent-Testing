@@ -71,14 +71,28 @@ class TestAnalyzer:
                     }
                 )
 
-    def add_failure(self, failure_type: str, message: str, severity: Severity) -> None:
-        self.failures.append(
-            {
-                "type": failure_type,
-                "message": message,
-                "severity": severity,
-            }
-        )
+    def add_failure(
+        self,
+        failure_type: str,
+        message: str,
+        severity: Severity,
+        *,
+        expected_element: str | None = None,
+        selector: str | None = None,
+        available_context: dict | None = None,
+    ) -> None:
+        failure: dict = {
+            "type": failure_type,
+            "message": message,
+            "severity": severity,
+        }
+        if expected_element is not None:
+            failure["expected_element"] = expected_element
+        if selector is not None:
+            failure["selector"] = selector
+        if available_context is not None:
+            failure["available_context"] = available_context
+        self.failures.append(failure)
 
     def check_http_status(self, http_status: int) -> None:
         if http_status >= 400:

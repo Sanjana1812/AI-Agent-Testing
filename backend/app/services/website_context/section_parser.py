@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 _SECTIONS_SCRIPT = """
 () => {
-  const selectors = 'main, section, article, aside, [role="main"], [role="region"], [role="banner"], [role="complementary"]';
+  const selectors = 'main, section, article, aside, header, footer, [role="main"], [role="region"], [role="banner"], [role="complementary"], [role="contentinfo"]';
   const seen = new Set();
   const sections = [];
 
@@ -34,6 +34,9 @@ _SECTIONS_SCRIPT = """
       id,
       class_name: className,
       heading,
+      buttons_count: el.querySelectorAll('button, [role="button"], input[type="submit"]').length,
+      links_count: el.querySelectorAll('a[href]').length,
+      forms_count: el.querySelectorAll('form').length,
     });
   });
 
@@ -43,7 +46,7 @@ _SECTIONS_SCRIPT = """
 
 
 def parse(page: Page) -> list[SectionInfo]:
-    """Return semantic sections with tag, role, id, class, and primary heading."""
+    """Return semantic sections with counts and heading metadata."""
     logger.debug("[ContextEngine] Parsing semantic sections")
     raw_sections = page.evaluate(_SECTIONS_SCRIPT)
     sections: list[SectionInfo] = []
@@ -51,6 +54,9 @@ def parse(page: Page) -> list[SectionInfo]:
     for item in raw_sections:
         section: SectionInfo = {
             "tag": str(item.get("tag", "")),
+            "buttons_count": int(item.get("buttons_count", 0)),
+            "links_count": int(item.get("links_count", 0)),
+            "forms_count": int(item.get("forms_count", 0)),
         }
         if item.get("role"):
             section["role"] = str(item["role"])

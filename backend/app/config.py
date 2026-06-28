@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{_DEFAULT_SQLITE_PATH.as_posix()}"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    ai_provider: str = "ollama"
     model_name: str = "llama3"
     ollama_base_url: str = "http://localhost:11434"
     ollama_timeout_seconds: int = 60

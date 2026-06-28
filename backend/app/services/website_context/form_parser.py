@@ -12,12 +12,27 @@ logger = logging.getLogger(__name__)
 
 _FORMS_SCRIPT = """
 () => {
-  const forms = [];
+  const escape = (value) => value.replace(/([!"#$%&'()*+,./:;<=>?@[\\\\\\]^`{|}~])/g, '\\\\$1');
+  const isVisible = (el) => {
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const detectSection = (el) => {
+    if (el.closest('footer, [role="contentinfo"], .footer, #footer')) return 'footer';
+    if (el.closest('aside, [role="complementary"]')) return 'sidebar';
+    if (el.closest('header, nav, [role="navigation"]')) return 'header';
+    return 'body';
+  };
+  const buildSelector = (el) => {
+    if (el.id) return `#${escape(el.id)}`;
+    return 'form';
+  };
 
+  const forms = [];
   document.querySelectorAll('form').forEach((form) => {
     const fields = [];
     const seen = new Set();
-
     form.querySelectorAll('input, textarea, select').forEach((field) => {
       const type = (field.getAttribute('type') || field.tagName.toLowerCase()).toLowerCase();
       if (type === 'hidden') return;
@@ -34,6 +49,9 @@ _FORMS_SCRIPT = """
       action: form.getAttribute('action') || '',
       method: (form.getAttribute('method') || 'get').toLowerCase(),
       fields,
+      visible: isVisible(form),
+      section: detectSection(form),
+      selector: buildSelector(form),
     });
   });
 
@@ -43,7 +61,7 @@ _FORMS_SCRIPT = """
 
 
 def parse(page: Page) -> list[FormInfo]:
-    """Return forms with action, method, and field metadata."""
+    """Return forms with action, method, field metadata, and visibility."""
     logger.debug("[ContextEngine] Parsing forms")
     raw_forms = page.evaluate(_FORMS_SCRIPT)
     forms: list[FormInfo] = []
@@ -63,6 +81,9 @@ def parse(page: Page) -> list[FormInfo]:
                 action=str(item.get("action", "")),
                 method=str(item.get("method", "get")),
                 fields=fields,
+                visible=bool(item.get("visible", True)),
+                section=str(item.get("section", "body")),
+                selector=str(item.get("selector", "form")),
             )
         )
 
