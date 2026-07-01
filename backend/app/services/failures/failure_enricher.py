@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.models.diagnosis.failure_categories import FAILURE_TYPE_TO_CATEGORY
+from app.services.failures.failure_messages import humanize_failure_message
 
 
 def _failed_steps_by_id(steps: list[dict]) -> dict[str, dict]:
@@ -76,6 +77,8 @@ def enrich_failures(result: dict, website_context_summary: dict | None = None) -
         category = FAILURE_TYPE_TO_CATEGORY.get(failure.get("type", ""))
         if category:
             record.setdefault("category", category.value)
+
+        record["user_message"] = humanize_failure_message(record, plan_step)
 
         enriched.append(record)
 

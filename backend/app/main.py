@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import init_db
 from app.routers import run, system
+from app.services.playwright_bootstrap import ensure_playwright_browsers
 
 logging.basicConfig(level=logging.INFO)
 
@@ -30,6 +31,7 @@ app.include_router(system.router)
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    ensure_playwright_browsers()
 
 
 @app.get("/")

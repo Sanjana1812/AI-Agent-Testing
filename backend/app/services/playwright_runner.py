@@ -1,6 +1,10 @@
+import logging
 import time
 import uuid
+from datetime import datetime, timezone
+
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
@@ -10,13 +14,28 @@ from playwright.sync_api import sync_playwright
 
 from app.services.ai_planner import generate_test_plan
 from app.services.assertions import AssertionContext, AssertionEngine
+from app.services.self_healing import heal_locator
+from app.services.playwright_bootstrap import ensure_playwright_browsers, launch_chromium
 from app.services.semantic_targets import SEMANTIC_TARGET_SELECTORS
+from app.services.wait_strategy import wait_before_action
 from app.services.test_analyzer import TestAnalyzer
 
 STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "storage" / "screenshots"
 TIMEOUT_MS = 30_000
 TARGET_TIMEOUT_MS = 5_000
+VIEWPORT = {"width": 1280, "height": 720}
+BROWSER_LABEL = "Chromium (headless)"
 _executor = ProcessPoolExecutor(max_workers=2)
+
+
+def _reset_executor() -> None:
+    """Recreate the process pool after a worker crash (common on Windows reload)."""
+    global _executor
+    try:
+        _executor.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+    _executor = ProcessPoolExecutor(max_workers=2)
 
 
 class PlaywrightRunError(Exception):
@@ -60,10 +79,22 @@ def _resolve_selector(target: str) -> str:
 def _locator(page: Page, action: dict):
     if action.get("selector"):
         selector = str(action["selector"])
-        return page.locator(selector).first, selector
+        locator = page.locator(selector).first
+        try:
+            locator.wait_for(state="attached", timeout=500)
+            return locator, selector
+        except PlaywrightTimeoutError:
+            healed, healed_selector = heal_locator(page, action, selector)
+            if healed is not None:
+                return healed, healed_selector or selector
+        return locator, selector
     target = action["target"]
     selector = _resolve_selector(target)
-    return page.locator(selector).first, selector
+    locator = page.locator(selector).first
+    healed, healed_selector = heal_locator(page, action, selector)
+    if healed is not None:
+        return healed, healed_selector or selector
+    return locator, selector
 
 
 def _failure_metadata(action: dict, exc: Exception, context_summary: dict | None) -> dict:
@@ -76,6 +107,7 @@ def _failure_metadata(action: dict, exc: Exception, context_summary: dict | None
 
 
 def _verify_target_visible(page: Page, action: dict) -> None:
+    wait_before_action(page, action)
     locator, selector = _locator(page, action)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
@@ -84,6 +116,7 @@ def _verify_target_visible(page: Page, action: dict) -> None:
 
 
 def _click_target(page: Page, action: dict) -> None:
+    wait_before_action(page, action)
     locator, selector = _locator(page, action)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
@@ -93,6 +126,7 @@ def _click_target(page: Page, action: dict) -> None:
 
 
 def _fill_target(page: Page, action: dict, value: str) -> None:
+    wait_before_action(page, action)
     locator, selector = _locator(page, action)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
@@ -102,15 +136,25 @@ def _fill_target(page: Page, action: dict, value: str) -> None:
 
 
 def _scroll_target(page: Page, action: dict) -> None:
+    wait_before_action(page, action)
     locator, selector = _locator(page, action)
     try:
         locator.scroll_into_view_if_needed(timeout=TARGET_TIMEOUT_MS)
         page.wait_for_timeout(500)
     except PlaywrightTimeoutError as exc:
+        if action.get("target") in {"section", "hero", "footer"}:
+            for fallback in ("main", "body"):
+                try:
+                    page.locator(fallback).first.scroll_into_view_if_needed(timeout=TARGET_TIMEOUT_MS)
+                    page.wait_for_timeout(500)
+                    return
+                except PlaywrightTimeoutError:
+                    continue
         raise TargetNotFoundError(action.get("target", ""), selector, action.get("label")) from exc
 
 
 def _verify_form(page: Page, action: dict) -> None:
+    wait_before_action(page, action)
     locator, selector = _locator(page, action)
     try:
         locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
@@ -133,6 +177,7 @@ def _execute_action(
     if action_type == "open_page":
         response = page.goto(url, wait_until="domcontentloaded", timeout=TIMEOUT_MS)
         http_status = response.status if response else 0
+        wait_before_action(page, action)
     elif action_type == "wait":
         page.wait_for_timeout(int(action.get("ms", 1000)))
     elif action_type == "click":
@@ -146,6 +191,7 @@ def _execute_action(
     elif action_type == "verify_form":
         _verify_form(page, action)
     elif action_type == "verify_text":
+        wait_before_action(page, action)
         page.get_by_text(action["text"]).wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
     elif action_type == "capture":
         page.screenshot(path=str(screenshot_path), full_page=False)
@@ -179,13 +225,15 @@ def _execute_sync(
     page = None
     js_errors: list[str] = []
     abort_execution = False
+    screenshot_captured_at: str | None = None
 
     try:
+        ensure_playwright_browsers()
         with sync_playwright() as playwright:
             browser = None
             try:
-                browser = playwright.chromium.launch(headless=True)
-                page = browser.new_page()
+                browser = launch_chromium(playwright)
+                page = browser.new_page(viewport=VIEWPORT)
                 page.on("pageerror", lambda error: js_errors.append(str(error)))
 
                 for index, action in enumerate(plan, start=1):
@@ -205,6 +253,7 @@ def _execute_sync(
                             final_url = page.url
                         if action["action"] == "capture" and screenshot_path.exists():
                             screenshot_rel = f"/storage/screenshots/{screenshot_filename}"
+                            screenshot_captured_at = datetime.now(timezone.utc).isoformat()
                     except TargetNotFoundError as exc:
                         action_failed = True
                         analyzer.complete_step("failed")
@@ -292,6 +341,39 @@ def _execute_sync(
                     except PlaywrightError:
                         pass
 
+                    capture_index = next(
+                        (idx for idx, step in enumerate(plan) if step.get("action") == "capture"),
+                        None,
+                    )
+                    if capture_index is not None:
+                        final_ctx = AssertionContext(
+                            page=page,
+                            action=plan[capture_index],
+                            url=url,
+                            http_status=http_status,
+                            screenshot_path=screenshot_path if screenshot_path.exists() else None,
+                        )
+                        final_assertions = assertion_engine.run_final_assertions(final_ctx)
+                        capture_step_id = str(capture_index + 1)
+                        for step in analyzer.steps:
+                            if step["id"] != capture_step_id:
+                                continue
+                            existing = list(step.get("assertions") or [])
+                            step["assertions"] = existing + final_assertions
+                            if assertion_engine.all_passed(final_assertions):
+                                if step["status"] != "failed":
+                                    step["status"] = "passed"
+                            else:
+                                step["status"] = "failed"
+                                for reason in assertion_engine.failure_reasons(final_assertions):
+                                    analyzer.add_failure(
+                                        "assertion_failure",
+                                        reason,
+                                        "medium",
+                                        available_context=context_summary,
+                                    )
+                            break
+
                 for js_error in js_errors:
                     analyzer.add_failure("javascript_error", js_error, "low")
 
@@ -323,6 +405,9 @@ def _execute_sync(
         screenshot=screenshot_rel,
         ai_plan=plan,
         ai_plan_source=ai_plan_source,
+        viewport=f"{VIEWPORT['width']}×{VIEWPORT['height']}",
+        browser=BROWSER_LABEL,
+        screenshot_captured_at=screenshot_captured_at,
     )
 
 
@@ -342,21 +427,39 @@ async def run_test(url: str, goal: str) -> dict:
         logger.warning("[Runner] Website context extraction failed: %s", exc)
         website_context = empty_context()
 
+    from app.services.website_analysis import analyze_website
+
+    website_analysis = analyze_website(website_context, goal=goal)
     context_summary = ContextIndex(website_context).summary()
-    plan_data = await generate_test_plan(url, goal, website_context)
+    plan_data = await generate_test_plan(url, goal, website_context, website_analysis=website_analysis)
 
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        _executor,
-        _execute_sync,
-        url,
-        goal,
-        plan_data["plan"],
-        plan_data["source"],
-        context_summary,
-    )
+    try:
+        result = await loop.run_in_executor(
+            _executor,
+            _execute_sync,
+            url,
+            goal,
+            plan_data["plan"],
+            plan_data["source"],
+            context_summary,
+        )
+    except BrokenProcessPool as exc:
+        logger.warning("[Runner] Process pool broken, resetting and retrying once: %s", exc)
+        _reset_executor()
+        result = await loop.run_in_executor(
+            _executor,
+            _execute_sync,
+            url,
+            goal,
+            plan_data["plan"],
+            plan_data["source"],
+            context_summary,
+        )
     if plan_data.get("metadata"):
         result["ai_plan_metadata"] = plan_data["metadata"]
+    if plan_data.get("website_analysis"):
+        result["_website_analysis"] = plan_data["website_analysis"]
     result["_website_context"] = website_context
     result["_source_url"] = url
     return result

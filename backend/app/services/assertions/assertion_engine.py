@@ -7,6 +7,7 @@ import logging
 from app.services.assertions import (
     element_assertion,
     form_assertion,
+    journey_assertion,
     network_assertion,
     page_assertion,
     text_assertion,
@@ -69,6 +70,12 @@ class AssertionEngine:
             return [timing_assertion.assert_wait_duration]
 
         if action_type == "click":
+            selector = ctx.action.get("selector")
+            if selector:
+                return [
+                    lambda c, sel=selector: element_assertion.assert_selector_visible(c, sel),
+                    lambda c: page_assertion.assert_page_title_exists(c),
+                ]
             assertions = []
             if target:
                 assertions.append(lambda c, t=target: element_assertion.assert_element_visible(c, t))
@@ -90,6 +97,9 @@ class AssertionEngine:
             return [page_assertion.assert_page_title_exists]
 
         if action_type == "verify_visible":
+            selector = ctx.action.get("selector")
+            if selector:
+                return [lambda c, sel=selector: element_assertion.assert_selector_visible(c, sel)]
             if target:
                 return [lambda c, t=target: element_assertion.assert_element_visible(c, t)]
             return []
@@ -119,3 +129,7 @@ class AssertionEngine:
             for result in results
             if not result["passed"]
         ]
+
+    def run_final_assertions(self, ctx: AssertionContext) -> list[AssertionResult]:
+        """Run journey-level assertions on the final page state."""
+        return journey_assertion.run_final_journey_assertions(ctx)

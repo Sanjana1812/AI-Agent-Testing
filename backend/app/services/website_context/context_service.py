@@ -12,6 +12,7 @@ from playwright.sync_api import Page
 
 from app.services.website_context import (
     button_parser,
+    components_parser,
     footer_parser,
     form_parser,
     heading_parser,
@@ -27,6 +28,21 @@ from app.services.website_context.json_builder import WebsiteContext, empty_cont
 logger = logging.getLogger(__name__)
 
 _executor = ProcessPoolExecutor(max_workers=2)
+
+
+def _extract_worker(url: str) -> WebsiteContext:
+    """Top-level worker entrypoint for process pool context extraction."""
+    return ContextService().extract(url)
+
+
+def pool_context_loader(url: str) -> WebsiteContext:
+    """
+    Load website context via the process pool.
+
+    Safe to call from FastAPI async handlers during planning refreshes.
+    """
+    future = _executor.submit(_extract_worker, url)
+    return future.result(timeout=120)
 
 ParserFn = Callable[[Page], Any]
 
@@ -48,6 +64,7 @@ class ContextService:
         "sections": section_parser.parse,
         "footer": footer_parser.parse,
         "links": link_parser.parse,
+        "components": components_parser.parse,
     }
 
     def extract(self, url: str) -> WebsiteContext:
@@ -83,7 +100,7 @@ class ContextService:
                     )
 
         logger.info(
-            "[ContextService] Context extracted — nav=%d headings=%d buttons=%d forms=%d sections=%d footer=%d links=%d",
+            "[ContextService] Context extracted — nav=%d headings=%d buttons=%d forms=%d sections=%d footer=%d links=%d components=%d",
             len(context["navigation"]),
             len(context["headings"]),
             len(context["buttons"]),
@@ -91,6 +108,7 @@ class ContextService:
             len(context["sections"]),
             len(context["footer"]),
             len(context["links"]),
+            len(context.get("components", [])),
         )
         enriched = enrich(context)
         logger.info("[ContextService] Context enriched with classification and priority scores")

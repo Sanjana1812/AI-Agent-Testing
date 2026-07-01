@@ -14,6 +14,12 @@ class PlanStep(BaseModel):
     text: str | None = None
     value: str | None = None
     ms: int | None = None
+    selector_strategy: str | None = None
+    selector_confidence: float | None = None
+    selector_type: str | None = None
+    context_url: str | None = None
+    context_refresh: bool | None = None
+    selector_alternatives: list[str] | None = None
 
 
 class AssertionResult(BaseModel):
@@ -54,6 +60,7 @@ class ExecutionFailure(BaseModel):
     website_context_summary: dict | None = None
     timestamp: str | None = None
     category: str | None = None
+    user_message: str | None = None
 
 
 class PlannerMetadata(BaseModel):
@@ -64,6 +71,27 @@ class PlannerMetadata(BaseModel):
     validation_score: float
     planning_time_ms: int
     provider: str | None = None
+    context_refreshes: int = 0
+    pages_visited: list[str] = Field(default_factory=list)
+    cache_hits: int = 0
+    cache_misses: int = 0
+    planner_confidence: float | None = None
+    planner_confidence_label: str | None = None
+    detected_website_type: str | None = None
+    detected_intent: str | None = None
+    primary_navigation: list[str] = Field(default_factory=list)
+    planner_strategy: str | None = None
+    generated_journey: list[str] = Field(default_factory=list)
+    website_type: str | None = None
+    business_domain: str | None = None
+    primary_goal: str | None = None
+    target_audience: str | None = None
+    recommended_test_flow: list[str] = Field(default_factory=list)
+    high_risk_areas: list[str] = Field(default_factory=list)
+    testing_priority: list[str] = Field(default_factory=list)
+    analysis_confidence: float | None = None
+    analysis_reasoning: str | None = None
+    testing_strategy: str | None = None
 
 
 class ExecutionSummary(BaseModel):
@@ -88,3 +116,7 @@ class RunTestResponse(BaseModel):
     failures: list[ExecutionFailure]
     summary: ExecutionSummary
     ai_plan_metadata: PlannerMetadata | None = None
+    website_context_summary: dict | None = None
+    viewport: str | None = None
+    browser: str | None = None
+    screenshot_captured_at: str | None = None

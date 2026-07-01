@@ -4,7 +4,7 @@ SEMANTIC_TARGET_SELECTORS: dict[str, str] = {
     "header": "header",
     "footer": "footer",
     "hero": "main, section:first-of-type, [role='banner']",
-    "section": "section, main section",
+    "section": "section, main, main section, [role='main']",
     "button": "button, [role='button']",
     "submit": "button[type='submit'], input[type='submit']",
     "form": "form",

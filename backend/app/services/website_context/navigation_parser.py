@@ -37,7 +37,34 @@ _NAVIGATION_SCRIPT = """
   };
 
   const regions = Array.from(
-    document.querySelectorAll('nav, [role="navigation"], header nav, .nav, .navbar, .navigation')
+    document.querySelectorAll([
+      'nav',
+      '[role="navigation"]',
+      'header nav',
+      '.nav',
+      '.navbar',
+      '.navigation',
+      '#nav-main',
+      '.header',
+      '.topbar',
+      '.menu',
+      '.main-menu',
+      '.sidebar nav',
+      '.breadcrumb',
+      '.mega-menu',
+      '.megamenu',
+      '[class*="Navigation"]',
+      '[class*="navigation"]',
+      '[class*="NavBar"]',
+      '[class*="navbar"]',
+      '[data-testid*="nav"]',
+      '[data-testid*="menu"]',
+      'header .menu',
+      '.sticky-nav',
+      '.sticky-navigation',
+      '[class*="TopBar"]',
+      '[class*="topbar"]',
+    ].join(', '))
   );
   const seen = new Set();
   const links = [];
@@ -63,7 +90,13 @@ _NAVIGATION_SCRIPT = """
     region.querySelectorAll('a[href]').forEach(addLink);
   }
   if (links.length === 0) {
-    document.querySelectorAll('header a[href]').forEach(addLink);
+    document.querySelectorAll('header a[href], .header a[href], .topbar a[href], [role="navigation"] a[href]').forEach(addLink);
+  }
+  if (links.length === 0) {
+    document.querySelectorAll('a[href]').forEach((anchor) => {
+      const text = (anchor.innerText || anchor.textContent || '').trim();
+      if (text.length >= 2 && text.length <= 40) addLink(anchor);
+    });
   }
   return links;
 }

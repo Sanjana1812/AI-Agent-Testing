@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.services.planner.semantic_filter import is_decorative_element
+from app.services.website_context.hero_detector import detect_hero_heading, detect_hero_section
 from app.services.website_context.json_builder import WebsiteContext
 
 
@@ -23,6 +25,7 @@ class ContextIndex:
             "section_count": len(self.context.get("sections", [])),
             "footer_link_count": len(self.context.get("footer", [])),
             "link_count": len(self.context.get("links", [])),
+            "component_count": len(self.context.get("components", [])),
             "page_title": self.context.get("metadata", {}).get("title", ""),
             "top_cta": self.highest_priority_cta().get("text") if self.highest_priority_cta() else None,
         }
@@ -35,7 +38,7 @@ class ContextIndex:
         return [
             btn
             for btn in self.context.get("buttons", [])
-            if btn.get("visible") and btn.get("enabled", not btn.get("disabled"))
+            if btn.get("visible") and btn.get("enabled", not btn.get("disabled")) and not is_decorative_element(btn)
         ]
 
     def visible_buttons(self) -> list[dict]:
@@ -55,14 +58,14 @@ class ContextIndex:
             links = [link for link in links if link.get("section") == section]
         if exclude_logo:
             links = [link for link in links if link.get("classification") not in self.LOGO_CLASSIFICATIONS]
-        links = [link for link in links if link.get("visible", True)]
+        links = [link for link in links if link.get("visible", True) and not is_decorative_element(link)]
         return self._by_priority(links)
 
     def ranked_footer_links(self, *, exclude_logo: bool = True) -> list[dict]:
         links = list(self.context.get("footer", []))
         if exclude_logo:
             links = [link for link in links if link.get("classification") not in self.LOGO_CLASSIFICATIONS]
-        links = [link for link in links if link.get("visible", True)]
+        links = [link for link in links if link.get("visible", True) and not is_decorative_element(link)]
         return self._by_priority(links)
 
     def ranked_links(self, *, exclude_logo: bool = True, internal_only: bool = False) -> list[dict]:
@@ -71,8 +74,15 @@ class ContextIndex:
             links = [link for link in links if link.get("internal")]
         if exclude_logo:
             links = [link for link in links if link.get("classification") not in self.LOGO_CLASSIFICATIONS]
-        links = [link for link in links if link.get("visible", True)]
+        links = [link for link in links if link.get("visible", True) and not is_decorative_element(link)]
         return self._by_priority(links)
+
+    def ranked_components(self, *, component_type: str | None = None) -> list[dict]:
+        components = list(self.context.get("components", []))
+        if component_type:
+            components = [item for item in components if item.get("type") == component_type]
+        components = [item for item in components if item.get("visible", True)]
+        return self._by_priority(components)
 
     def ranked_sections(self, *, semantic_type: str | None = None) -> list[dict]:
         sections = list(self.context.get("sections", []))
@@ -107,12 +117,16 @@ class ContextIndex:
         return ranked[0] if ranked else None
 
     def hero_section(self) -> dict | None:
+        detected = detect_hero_section(self.context)
+        if detected:
+            return detected
         hero = self.highest_priority_section(semantic_type="hero")
-        if hero:
-            return hero
-        return self.highest_priority_section()
+        return hero
 
     def hero_heading(self) -> dict | None:
+        detected = detect_hero_heading(self.context)
+        if detected:
+            return detected
         headings = self._by_priority(list(self.context.get("headings", [])))
         for heading in headings:
             if heading.get("level") == 1:
@@ -147,7 +161,7 @@ class ContextIndex:
         return bool(self.context.get("forms"))
 
     def has_links(self) -> bool:
-        return bool(self.context.get("links"))
+        return bool(self.context.get("links")) or bool(self.ranked_nav_links(exclude_logo=False))
 
     def has_email_field(self) -> bool:
         for form in self.context.get("forms", []):
@@ -240,4 +254,5 @@ class ContextIndex:
             "sections": self.ranked_sections()[:10],
             "footer": self.ranked_footer_links(exclude_logo=False)[:12],
             "links": self.ranked_links(exclude_logo=False)[:15],
+            "components": self.ranked_components()[:12],
         }

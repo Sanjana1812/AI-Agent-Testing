@@ -30,6 +30,23 @@ def assert_element_exists(ctx: AssertionContext, target: str) -> AssertionResult
     return run_safe("element_exists", check)
 
 
+def assert_selector_visible(ctx: AssertionContext, selector: str) -> AssertionResult:
+    """Assert that a CSS selector resolves to a visible element."""
+
+    def check() -> tuple[bool, str, str, str | None]:
+        locator = ctx.page.locator(selector).first
+        try:
+            locator.wait_for(state="visible", timeout=TARGET_TIMEOUT_MS)
+            passed = locator.is_visible()
+        except PlaywrightTimeoutError:
+            passed = False
+        actual = "visible" if passed else "not visible"
+        reason = None if passed else f"Selector is not visible: {selector}"
+        return passed, f"visible:{selector}", actual, reason
+
+    return run_safe("element_visible", check)
+
+
 def assert_element_visible(ctx: AssertionContext, target: str) -> AssertionResult:
     """Assert that a semantic target is visible on the page."""
 

@@ -23,13 +23,14 @@ backend/storage/*.sqlite
 backend/storage/*.sqlite3
 
 # ==========================
+# Playwright Browsers
+# ==========================
+backend/storage/playwright-browsers/
+
+# ==========================
 # Screenshots & Generated Files
 # ==========================
-backend/storage/screenshots/*.png
-backend/storage/screenshots/*.jpg
-backend/storage/screenshots/*.jpeg
-
-# Optional (future)
+backend/storage/screenshots/
 backend/storage/reports/
 backend/storage/uploads/
 

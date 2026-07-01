@@ -7,12 +7,35 @@ import time
 
 from app.config import settings
 from app.services.ai.provider_factory import get_ai_provider
-from app.services.planner.context_fallback import build_context_plan
+from app.services.planner.context_cache import ContextCache, contexts_from_cache, normalize_url
 from app.services.planner.context_index import ContextIndex
 from app.services.planner.context_validator import validate_plan_against_context
 from app.services.planner.display_labels import build_step_label
+from app.services.planner.intent_classifier import (
+    IntentType,
+    classify_intent,
+    detect_intent,
+    legacy_intent_string,
+)
+from app.services.planner.journey_builder import build_validated_journey
+from app.services.planner.journey_validator import validate_journey
+from app.services.planner.navigation_graph import NavigationGraph
+from app.services.planner.multi_page_journey import resolve_plan_for_contexts
+from app.services.planner.plan_presentation import (
+    build_journey_summary,
+    build_planner_reasoning,
+    is_minimal_fallback_plan,
+    normalize_planner_source,
+    polish_plan_labels,
+    compute_planner_confidence,
+)
 from app.services.planner.plan_metadata import build_plan_metadata, compute_validation_score
+from app.services.planner.selector_resolver import resolve_plan_selectors
+from app.services.website_context import ContextService
+from app.services.website_context.context_service import pool_context_loader
 from app.services.website_context.json_builder import WebsiteContext, empty_context
+from app.services.website_analysis import WebsiteAnalysis, analyze_website
+from app.services.website_analysis.journey_builder import try_build_analysis_journey
 
 logger = logging.getLogger(__name__)
 
@@ -54,25 +77,8 @@ TARGET_ACTIONS = frozenset({"click", "scroll", "fill", "verify_visible", "verify
 
 GENERIC_TARGETS = frozenset({"page", "text", "body", "content", "main", "visible"})
 FORBIDDEN_VERIFY_TEXT_INTENTS = frozenset(
-    {"flow", "navigation", "login", "signup", "contact", "form", "search", "checkout", "dashboard", "profile", "general"}
+    {"flow", "navigation", "login", "signup", "contact", "form", "search", "checkout", "dashboard", "profile", "general", "purchase"}
 )
-
-INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "navigation": ("navigation", "navbar", "nav bar", "nav menu", "top menu", "site menu", "menu bar"),
-    "flow": ("flow", "journey", "entire website", "whole site", "full site", "user flow", "end to end", "e2e", "website flow"),
-    "login": ("login", "log in", "sign in", "sign-in", "authenticate", "authentication"),
-    "signup": ("signup", "sign up", "sign-up", "register", "registration", "create account"),
-    "contact": ("contact", "contact us", "contact form", "get in touch", "reach us"),
-    "form": ("form validation", "validate form", "submit form", "fill form", "web form"),
-    "search": ("search", "search bar", "search box", "lookup", "find product"),
-    "checkout": ("checkout", "check out", "shopping cart", "cart", "purchase", "buy now", "payment"),
-    "dashboard": ("dashboard", "admin panel", "control panel", "overview page"),
-    "profile": ("profile", "my account", "account page", "user profile", "settings page"),
-    "responsive": ("responsive", "mobile view", "mobile layout", "tablet", "viewport", "breakpoints"),
-    "accessibility": ("accessibility", "a11y", "wcag", "screen reader", "aria"),
-    "performance": ("performance", "page speed", "load time", "loading speed", "lighthouse"),
-}
-
 
 LEGACY_SELECTOR_TO_TARGET = {
     "nav": "navigation",
@@ -109,31 +115,6 @@ LEGACY_SELECTOR_TO_TARGET = {
     "search": "input",
     "search_box": "input",
 }
-
-
-def detect_intent(goal: str) -> str:
-    goal_lower = goal.lower().strip()
-    if not goal_lower:
-        return "general"
-
-    best_intent = "general"
-    best_score = 0
-
-    for intent, keywords in INTENT_KEYWORDS.items():
-        score = sum(1 for keyword in keywords if keyword in goal_lower)
-        if score > best_score:
-            best_score = score
-            best_intent = intent
-
-    if best_score == 0:
-        if "hero" in goal_lower:
-            return "flow"
-        if "footer" in goal_lower:
-            return "navigation"
-        if "form" in goal_lower:
-            return "form"
-
-    return best_intent
 
 
 def _normalize_target(step: dict) -> str | None:
@@ -333,29 +314,42 @@ def _validate_plan(plan: list, intent: str, index: ContextIndex) -> tuple[list, 
     return _finalize_plan(context_validated), len(rejections)
 
 
-def deterministic_fallback(goal: str, index: ContextIndex, intent: str) -> list[dict]:
-    """Build a plan from discovered page elements only."""
-    return build_context_plan(goal, intent, index)
+def deterministic_fallback(goal: str, index: ContextIndex, intent: IntentType | str) -> list[dict]:
+    """Build an intent-aware journey from discovered page elements."""
+    if isinstance(intent, str):
+        resolved = classify_intent(goal)
+    else:
+        resolved = intent
+    return build_validated_journey(goal, resolved, index)
 
 
 async def generate_test_plan(
     url: str,
     goal: str,
     website_context: WebsiteContext | None = None,
+    website_analysis: WebsiteAnalysis | None = None,
 ) -> dict:
     planning_start = time.perf_counter()
     context = website_context or empty_context()
+    analysis = website_analysis or analyze_website(context, goal=goal)
     index = ContextIndex(context)
-    intent = detect_intent(goal)
+    intent_type = classify_intent(goal)
+    intent = legacy_intent_string(intent_type)
+    graph = NavigationGraph.from_context(index)
     provider = get_ai_provider()
     source = "fallback"
     plan: list[dict] = []
     rejections = 0
     provider_name = provider.name
 
-    logger.info("[Planner] Detected intent: %s", intent)
+    logger.info("[Planner] Detected intent: %s (%s)", intent, intent_type.value)
+    logger.info("[Planner] Website analysis: %s (confidence=%.2f)", analysis.website_type, analysis.confidence)
     logger.info("[Planner] Context summary: %s", index.summary())
+    logger.info("[Planner] Navigation graph: %s", graph.tree_summary())
     logger.info("[Planner] Using AI provider: %s", provider_name)
+
+    planner_snapshot = index.planner_snapshot()
+    planner_snapshot["website_analysis"] = analysis.to_dict()
 
     if await provider.is_available():
         logger.info("[Planner] Provider '%s' available", provider_name)
@@ -365,12 +359,17 @@ async def generate_test_plan(
                 url=url,
                 goal=goal,
                 intent=intent,
-                website_context=index.planner_snapshot(),
+                website_context=planner_snapshot,
             )
             if result.success:
                 data = _parse_json_response(result.text)
-                plan, rejections = _validate_plan(data.get("plan", []), intent, index)
-                source = result.provider or provider_name
+                candidate, rejections = _validate_plan(data.get("plan", []), intent, index)
+                journey_ok, journey_reasons = validate_journey(candidate, intent_type, index)
+                if journey_ok:
+                    plan = candidate
+                    source = result.provider or provider_name
+                else:
+                    logger.warning("[Planner] AI plan failed journey validation: %s", journey_reasons)
             else:
                 logger.warning("[Planner] Provider generation failed: %s", result.error)
         except Exception as exc:
@@ -378,9 +377,40 @@ async def generate_test_plan(
     else:
         logger.warning("[Planner] Provider '%s' unavailable", provider_name)
 
+    if not plan and analysis.confidence >= 0.5:
+        analysis_plan = try_build_analysis_journey(analysis, context, intent=intent_type)
+        if analysis_plan:
+            plan = analysis_plan
+            source = "semantic_planner"
+
     if not plan:
-        logger.info("[Planner] Using context-aware fallback for intent=%s", intent)
-        plan = deterministic_fallback(goal, index, intent)
+        logger.info("[Planner] Using journey builder for intent=%s", intent_type.value)
+        context_cache = ContextCache()
+        context_cache.put(normalize_url(url), context)
+        loader = pool_context_loader
+        plan = build_validated_journey(
+            goal,
+            intent_type,
+            index,
+            base_url=url,
+            cache=context_cache,
+            loader=loader,
+        )
+        source = "semantic_planner"
+    else:
+        context_cache = ContextCache()
+        context_cache.put(normalize_url(url), context)
+
+    if any(step.get("context_url") for step in plan):
+        contexts_by_url = contexts_from_cache(context_cache, context)
+        contexts_by_url.setdefault(normalize_url(url), index)
+        plan = resolve_plan_for_contexts(plan, contexts_by_url, index)
+    else:
+        plan = resolve_plan_selectors(plan, index)
+
+    plan = polish_plan_labels(plan, base_url=url)
+
+    if normalize_planner_source(source) == "semantic_planner" and is_minimal_fallback_plan(plan):
         source = "fallback"
 
     planning_time_ms = int((time.perf_counter() - planning_start) * 1000)
@@ -390,11 +420,46 @@ async def generate_test_plan(
         max_steps=MAX_STEPS,
         rejections=rejections,
     )
+    planner_confidence, confidence_label = compute_planner_confidence(plan, validation_score=validation_score)
+    strategy = "AI Provider Plan" if normalize_planner_source(source) not in {"fallback", "semantic_planner"} else (
+        "Analysis-Aware Journey" if analysis.confidence >= 0.5 and source == "semantic_planner"
+        else "Semantic Journey Builder" if source != "fallback"
+        else "Minimal Fallback Planner"
+    )
+    reasoning = build_planner_reasoning(
+        context=context,
+        intent=intent,
+        plan=plan,
+        base_url=url,
+        planner_strategy=strategy,
+    )
+    journey_summary = build_journey_summary(plan, base_url=url)
     metadata = build_plan_metadata(
         planner_source=source,
         planning_time_ms=planning_time_ms,
         validation_score=validation_score,
         provider=provider_name,
+        context_refreshes=context_cache.stats.context_refreshes,
+        pages_visited=list(context_cache.stats.pages_visited),
+        cache_hits=context_cache.stats.cache_hits,
+        cache_misses=context_cache.stats.cache_misses,
+        planner_confidence=planner_confidence,
+        planner_confidence_label=confidence_label,
+        detected_website_type=analysis.website_type or reasoning["detected_website_type"],
+        detected_intent=reasoning["detected_intent"],
+        primary_navigation=reasoning["primary_navigation"],
+        planner_strategy=reasoning["planner_strategy"],
+        generated_journey=journey_summary,
+        website_type=analysis.website_type,
+        business_domain=analysis.business_domain,
+        primary_goal=analysis.primary_goal,
+        target_audience=analysis.target_audience,
+        recommended_test_flow=analysis.recommended_test_flow,
+        high_risk_areas=analysis.high_risk_areas,
+        testing_priority=analysis.testing_priority,
+        analysis_confidence=analysis.confidence,
+        analysis_reasoning=analysis.reasoning,
+        testing_strategy=f"Prioritize {', '.join(analysis.testing_priority[:3])}",
     )
 
     return {
@@ -402,4 +467,5 @@ async def generate_test_plan(
         "source": source,
         "intent": intent,
         "metadata": metadata,
+        "website_analysis": analysis.to_dict(),
     }

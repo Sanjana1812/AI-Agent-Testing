@@ -137,11 +137,14 @@ class TestAnalyzer:
         screenshot: str,
         ai_plan: list[dict],
         ai_plan_source: str,
+        viewport: str | None = None,
+        browser: str | None = None,
+        screenshot_captured_at: str | None = None,
     ) -> dict:
         summary = self.build_summary()
         status = "success" if summary["health"] == "PASS" else "failed"
 
-        return {
+        result = {
             "id": run_id,
             "goal": goal,
             "status": status,
@@ -156,3 +159,10 @@ class TestAnalyzer:
             "failures": self.failures,
             "summary": summary,
         }
+        if viewport:
+            result["viewport"] = viewport
+        if browser:
+            result["browser"] = browser
+        if screenshot_captured_at:
+            result["screenshot_captured_at"] = screenshot_captured_at
+        return result

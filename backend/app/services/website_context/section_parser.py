@@ -25,6 +25,7 @@ _SECTIONS_SCRIPT = """
     const heading = headingEl
       ? (headingEl.innerText || headingEl.textContent || '').trim().replace(/\\s+/g, ' ')
       : '';
+    const rect = el.getBoundingClientRect();
     const key = tag + '|' + role + '|' + id + '|' + className + '|' + heading;
     if (seen.has(key)) return;
     seen.add(key);
@@ -37,6 +38,8 @@ _SECTIONS_SCRIPT = """
       buttons_count: el.querySelectorAll('button, [role="button"], input[type="submit"]').length,
       links_count: el.querySelectorAll('a[href]').length,
       forms_count: el.querySelectorAll('form').length,
+      viewport_top: Math.round(rect.top),
+      viewport_area: Math.round(rect.width * rect.height),
     });
   });
 
@@ -66,6 +69,10 @@ def parse(page: Page) -> list[SectionInfo]:
             section["class_name"] = str(item["class_name"])
         if item.get("heading"):
             section["heading"] = str(item["heading"])
+        if item.get("viewport_top") is not None:
+            section["viewport_top"] = int(item["viewport_top"])
+        if item.get("viewport_area") is not None:
+            section["viewport_area"] = int(item["viewport_area"])
         sections.append(section)
 
     return sections

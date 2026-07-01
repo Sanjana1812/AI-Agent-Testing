@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 
+from app.services.planner.semantic_filter import filter_context
 from app.services.website_context.element_classifier import (
     classify_anchor_link,
     classify_button,
@@ -15,6 +16,7 @@ from app.services.website_context.element_classifier import (
     classify_section,
     infer_button_type,
 )
+from app.services.website_context.hero_detector import detect_hero_heading, detect_hero_section
 from app.services.website_context.json_builder import WebsiteContext
 from app.services.website_context.priority_engine import (
     score_button,
@@ -74,11 +76,38 @@ def enrich(context: WebsiteContext) -> WebsiteContext:
         link["classification"] = classification
         link["priority"] = score_nav_link(link, classification)
 
+    for component in enriched.get("components", []):
+        component["classification"] = str(component.get("type", "component")).replace("_", " ").title()
+        component["priority"] = int(component.get("importance", 50))
+
+    hero_section = detect_hero_section(enriched)
+    if hero_section:
+        sections = enriched.get("sections", [])
+        replaced = False
+        for section in sections:
+            if section.get("semantic_type") == "hero" or section.get("heading") == hero_section.get("heading"):
+                section.update(hero_section)
+                replaced = True
+                break
+        if not replaced:
+            sections.insert(0, hero_section)
+            enriched["sections"] = sections
+
+    hero_heading = detect_hero_heading(enriched)
+    if hero_heading:
+        headings = enriched.get("headings", [])
+        if not any(h.get("level") == 1 for h in headings):
+            headings.insert(0, hero_heading)
+            enriched["headings"] = headings
+
+    enriched = filter_context(enriched)
+
     logger.debug(
-        "[ContextEnricher] Enriched context — nav=%d buttons=%d forms=%d sections=%d",
+        "[ContextEnricher] Enriched context — nav=%d buttons=%d forms=%d sections=%d components=%d",
         len(enriched.get("navigation", [])),
         len(enriched.get("buttons", [])),
         len(enriched.get("forms", [])),
         len(enriched.get("sections", [])),
+        len(enriched.get("components", [])),
     )
     return enriched

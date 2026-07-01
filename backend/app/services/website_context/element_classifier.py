@@ -153,11 +153,19 @@ def classify_section(section: dict, *, index: int = 0) -> SectionSemanticType:
     class_name = _normalize(section.get("class_name", ""))
     element_id = _normalize(section.get("id", ""))
     tag = _normalize(section.get("tag", ""))
+    viewport_top = int(section.get("viewport_top", 9999))
     blob = f"{heading} {class_name} {element_id}"
 
     if tag == "footer" or "footer" in blob:
         return "footer"
-    if index == 0 or "hero" in blob or section.get("role") == "banner":
+    if (
+        index == 0
+        or "hero" in blob
+        or section.get("role") == "banner"
+        or viewport_top <= 120
+        or "landing" in blob
+        or "jumbotron" in blob
+    ):
         return "hero"
     if any(word in blob for word in ("pricing", "price", "plan")):
         return "pricing"

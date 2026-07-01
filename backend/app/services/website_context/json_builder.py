@@ -77,6 +77,19 @@ class SectionInfo(TypedDict, total=False):
     links_count: int
     forms_count: int
     priority: int
+    viewport_top: int
+    viewport_area: int
+
+
+class ComponentInfo(TypedDict, total=False):
+    type: str
+    text: str
+    selector: str
+    importance: int
+    page_section: str
+    visible: bool
+    priority: int
+    classification: str
 
 
 class FooterLink(TypedDict, total=False):
@@ -111,6 +124,7 @@ class WebsiteContext(TypedDict):
     sections: list[SectionInfo]
     footer: list[FooterLink]
     links: list[AnchorLink]
+    components: list[ComponentInfo]
 
 
 def empty_context() -> WebsiteContext:
@@ -124,6 +138,7 @@ def empty_context() -> WebsiteContext:
         "sections": [],
         "footer": [],
         "links": [],
+        "components": [],
     }
 
 
@@ -137,6 +152,7 @@ def build(
     sections: list[SectionInfo] | None = None,
     footer: list[FooterLink] | None = None,
     links: list[AnchorLink] | None = None,
+    components: list[ComponentInfo] | None = None,
 ) -> WebsiteContext:
     """Combine parser outputs into the canonical Website Context structure."""
     context = empty_context()
@@ -156,6 +172,8 @@ def build(
         context["footer"] = footer
     if links is not None:
         context["links"] = links
+    if components is not None:
+        context["components"] = components
     return context
 
 
@@ -165,3 +183,5 @@ def merge_partial(context: WebsiteContext, key: str, value: Any) -> None:
         context["metadata"] = value
     elif key in context and isinstance(value, list):
         context[key] = value  # type: ignore[literal-required]
+    elif key == "components" and isinstance(value, list):
+        context["components"] = value

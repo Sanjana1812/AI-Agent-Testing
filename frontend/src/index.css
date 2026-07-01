@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --surface-0: #f7f6f3;
+  --surface-1: #f1efe8;
+  --surface-2: #ffffff;
+  --border: #e5e3dc;
+  --border-strong: #d5d3cc;
+  --text-primary: #0f172b;
+  --text-secondary: #5f5e5a;
+  --text-muted: #8a8985;
+  --bg-warning: #fef9ec;
+  --border-warning: #e8d48a;
+  --text-warning: #8a6d00;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+}
+
 body {
   @apply bg-background text-heading antialiased;
 }

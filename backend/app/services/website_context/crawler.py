@@ -11,6 +11,8 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from app.services.playwright_bootstrap import launch_chromium
+
 logger = logging.getLogger(__name__)
 
 NAVIGATION_TIMEOUT_MS = 30_000
@@ -43,7 +45,7 @@ def crawl(url: str) -> Generator[CrawlSession, None, None]:
 
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.launch(headless=True)
+            browser = launch_chromium(playwright)
         except PlaywrightError as exc:
             raise CrawlError(f"Failed to launch Chromium: {exc}") from exc
 
