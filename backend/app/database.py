@@ -50,4 +50,19 @@ def init_db() -> None:
     from app.models import Assertion, Screenshot, TestRun, TestStep, WebsiteContext  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _migrate_sqlite_columns()
     logger.info("[Database] Tables initialized at %s", settings.database_url)
+
+
+def _migrate_sqlite_columns() -> None:
+    if not settings.database_url.startswith("sqlite"):
+        return
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        try:
+            conn.execute(
+                text("ALTER TABLE test_runs ADD COLUMN execution_intelligence_log JSON")
+            )
+        except Exception:
+            pass

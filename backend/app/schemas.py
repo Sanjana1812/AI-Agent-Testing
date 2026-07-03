@@ -127,3 +127,4 @@ class RunTestResponse(BaseModel):
     screenshot_captured_at: str | None = None
     evidence_package: dict | None = None
     diagnosis_report: dict | None = None
+    execution_intelligence: dict | None = None

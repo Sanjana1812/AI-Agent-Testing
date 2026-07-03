@@ -1,6 +1,11 @@
 import { NavLink } from 'react-router-dom'
+import type { NavItem } from '../types'
 
-export default function Sidebar({ items }) {
+interface SidebarProps {
+  items: NavItem[]
+}
+
+export default function Sidebar({ items }: SidebarProps) {
   return (
     <aside className="flex w-64 flex-col border-r border-slate-200 bg-card">
       <div className="border-b border-slate-200 px-6 py-5">

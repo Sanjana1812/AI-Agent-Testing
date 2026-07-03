@@ -56,6 +56,23 @@ class TestAnalyzer:
         self.steps.append(step_data)
         self._active = None
 
+    def convert_last_step_to_skipped(self, reason: str = "") -> None:
+        if not self.steps:
+            return
+        self.steps[-1]["status"] = "skipped"
+        if reason:
+            self.steps[-1]["skip_reason"] = reason
+
+    def remove_last_failure(self) -> None:
+        if self.failures:
+            self.failures.pop()
+
+    def replace_last_step(self) -> None:
+        """Remove the most recently completed step so it can be re-attempted."""
+        if self.steps:
+            self.steps.pop()
+        self._active = None
+
     def skip_remaining_steps(self) -> None:
         completed_ids = {step["id"] for step in self.steps}
         for index, step_name in enumerate(self.step_names, start=1):

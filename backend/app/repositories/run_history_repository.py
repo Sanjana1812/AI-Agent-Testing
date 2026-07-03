@@ -59,6 +59,7 @@ class RunHistoryRepository(BaseRepository):
             started_at=started_at,
             completed_at=completed_at,
             duration_ms=duration_ms,
+            execution_intelligence_log=result.get("execution_intelligence_log"),
         )
 
         self.website_contexts.create(

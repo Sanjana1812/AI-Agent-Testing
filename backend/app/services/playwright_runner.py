@@ -22,6 +22,11 @@ from app.services.semantic_targets import NAVIGATION_LANDMARK_SELECTOR_CHAIN, SE
 from app.services.wait_strategy import wait_before_action
 from app.services.test_analyzer import TestAnalyzer
 from app.services.evidence.snapshot import ExecutionEvidenceBuffer
+from app.services.execution_intelligence import ExecutionIntelligenceOrchestrator
+from app.services.execution_intelligence.models import DecisionType
+from app.services.execution_intelligence.recovery import dismiss_modal_overlay
+from app.services.execution_intelligence.summary import build_summary_from_export
+from app.services.replanning import ReplanningEngine
 
 STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "storage" / "screenshots"
 EVIDENCE_DIR = Path(__file__).resolve().parent.parent.parent / "storage" / "evidence"
@@ -241,12 +246,189 @@ def _execute_action(
     return http_status
 
 
+def _step_error_message(analyzer: TestAnalyzer) -> str | None:
+    if analyzer.steps and analyzer.steps[-1].get("status") == "failed" and analyzer.failures:
+        return str(analyzer.failures[-1].get("message", ""))
+    return None
+
+
+def _intelligence_step_payload(
+    *,
+    index: int,
+    step_label: str,
+    action: dict,
+    analyzer: TestAnalyzer,
+    page: Page | None,
+    title: str,
+    http_status: int,
+    js_errors: list[str],
+    action_failed: bool,
+    step_start: float,
+    total_steps: int,
+) -> dict:
+    last_step = analyzer.steps[-1] if analyzer.steps else None
+    status = last_step["status"] if last_step else ("failed" if action_failed else "passed")
+    duration_ms = (
+        last_step["duration_ms"]
+        if last_step
+        else int((time.perf_counter() - step_start) * 1000)
+    )
+    current_url = ""
+    page_title = title
+    if page:
+        try:
+            current_url = page.url
+            page_title = page.title()
+        except PlaywrightError:
+            current_url = ""
+
+    return {
+        "step_index": index,
+        "step_name": step_label,
+        "status": status,
+        "current_url": current_url,
+        "page_title": page_title,
+        "selector": action.get("selector"),
+        "selector_found": status == "passed" and not action_failed,
+        "http_status": http_status,
+        "console_error_count": len(js_errors),
+        "network_error_count": 0,
+        "modal_detected": None,
+        "execution_time_ms": duration_ms,
+        "step_action": str(action.get("action", "")),
+        "error_message": _step_error_message(analyzer),
+        "total_steps": total_steps,
+        "page": page,
+    }
+
+
+def _apply_adaptive_actions(
+    *,
+    intelligence_orchestrator: ExecutionIntelligenceOrchestrator,
+    analyzer: TestAnalyzer,
+    page: Page | None,
+    index: int,
+    step_label: str,
+    action: dict,
+    title: str,
+    http_status: int,
+    js_errors: list[str],
+    action_failed: bool,
+    step_start: float,
+    total_steps: int,
+    rerun_step,
+    plan: list[dict],
+    step_names: list[str],
+) -> str:
+    """Apply adaptive intelligence actions.
+
+    Returns:
+        ``continue`` — proceed to the next step
+        ``abort`` — stop execution
+        ``replay_step`` — retry the current step (after replan or recovery)
+    """
+    payload = _intelligence_step_payload(
+        index=index,
+        step_label=step_label,
+        action=action,
+        analyzer=analyzer,
+        page=page,
+        title=title,
+        http_status=http_status,
+        js_errors=js_errors,
+        action_failed=action_failed,
+        step_start=step_start,
+        total_steps=total_steps,
+    )
+
+    for _ in range(4):
+        outcome = intelligence_orchestrator.process_step(payload)
+
+        if outcome.requires_skip:
+            analyzer.convert_last_step_to_skipped(outcome.decision.reason)
+            analyzer.remove_last_failure()
+            return "continue"
+
+        if outcome.requires_abort:
+            analyzer.skip_remaining_steps()
+            return "abort"
+
+        if outcome.requires_replan:
+            context = intelligence_orchestrator.context
+            if context is None:
+                return "continue"
+            remaining_plan = [dict(step) for step in plan[index - 1 :]]
+            replan_result = ReplanningEngine().replan(
+                observation=outcome.observation,
+                context=context,
+                remaining_plan=remaining_plan,
+                decision=outcome.decision,
+                website_context=context.website_context,
+            )
+            if replan_result.success and replan_result.history:
+                completed_prefix = [dict(step) for step in plan[: index - 1]]
+                new_tail = [dict(step) for step in replan_result.modified_remaining_plan]
+                plan[:] = completed_prefix + new_tail
+                step_names[:] = [_step_name(step) for step in plan]
+                context.total_steps = len(plan)
+                intelligence_orchestrator.record_replan_history(replan_result.history.to_dict())
+                analyzer.remove_last_failure()
+                analyzer.replace_last_step()
+                if rerun_step():
+                    return "continue"
+                return "replay_step"
+            return "continue"
+
+        if outcome.requires_recover:
+            selectors = outcome.decision.metadata.get("dismiss_selectors") or []
+            if dismiss_modal_overlay(page, selectors) and rerun_step():
+                return "continue"
+            payload = _intelligence_step_payload(
+                index=index,
+                step_label=step_label,
+                action=action,
+                analyzer=analyzer,
+                page=page,
+                title=title,
+                http_status=http_status,
+                js_errors=js_errors,
+                action_failed=True,
+                step_start=step_start,
+                total_steps=total_steps,
+            )
+            continue
+
+        if outcome.requires_retry:
+            alternative = outcome.decision.metadata.get("alternative_selector")
+            if rerun_step(selector_override=alternative):
+                return "continue"
+            payload = _intelligence_step_payload(
+                index=index,
+                step_label=step_label,
+                action=action,
+                analyzer=analyzer,
+                page=page,
+                title=title,
+                http_status=http_status,
+                js_errors=js_errors,
+                action_failed=True,
+                step_start=step_start,
+                total_steps=total_steps,
+            )
+            continue
+
+        return "continue"
+
+    return "continue"
+
+
 def _execute_sync(
     url: str,
     goal: str,
     plan: list[dict],
     ai_plan_source: str,
     context_summary: dict | None = None,
+    intelligence_input: dict | None = None,
 ) -> dict:
     ensure_playwright_browsers()
     run_id = str(uuid.uuid4())
@@ -257,6 +439,7 @@ def _execute_sync(
     screenshot_rel = ""
 
     step_names = [_step_name(action) for action in plan]
+    plan = list(plan)
     analyzer = TestAnalyzer(step_names)
     assertion_engine = AssertionEngine()
     start = time.perf_counter()
@@ -275,6 +458,17 @@ def _execute_sync(
         viewport=f"{VIEWPORT['width']}×{VIEWPORT['height']}",
         storage_dir=EVIDENCE_DIR,
     )
+    intelligence_orchestrator: ExecutionIntelligenceOrchestrator | None = None
+    if intelligence_input:
+        intelligence_orchestrator = ExecutionIntelligenceOrchestrator()
+        intelligence_orchestrator.start(
+            goal=str(intelligence_input.get("goal") or goal),
+            website_analysis=intelligence_input.get("website_analysis"),
+            strategy=intelligence_input.get("strategy"),
+            planner_metadata=intelligence_input.get("planner_metadata"),
+            website_context=intelligence_input.get("website_context"),
+            total_steps=len(plan),
+        )
 
     def _record_failure_evidence(
         step_id: str,
@@ -306,126 +500,204 @@ def _execute_sync(
                 page.on("pageerror", lambda error: js_errors.append(str(error)))
                 evidence_buffer.attach(page)
 
-                for index, action in enumerate(plan, start=1):
+                index = 1
+                while index <= len(plan):
                     if abort_execution:
                         break
 
+                    action = plan[index - 1]
                     step_id = str(index)
                     step_label = step_names[index - 1]
-                    analyzer.start_step(step_id, step_label)
-                    step_start = time.perf_counter()
-                    action_failed = False
 
-                    try:
-                        result_status = _execute_action(page, action, url, screenshot_path)
-                        if result_status is not None:
-                            http_status = result_status
-                            final_url = page.url
-                        if action["action"] == "capture" and screenshot_path.exists():
-                            screenshot_rel = f"/storage/screenshots/{screenshot_filename}"
-                            screenshot_captured_at = datetime.now(timezone.utc).isoformat()
-                    except TargetNotFoundError as exc:
-                        action_failed = True
-                        analyzer.complete_step("failed")
-                        analyzer.add_failure(
-                            "element_not_found",
-                            str(exc),
-                            "medium",
-                            **_failure_metadata(action, exc, context_summary),
-                        )
-                        _record_failure_evidence(step_id, step_label, action, "element_not_found", str(exc))
-                    except PlaywrightTimeoutError:
-                        action_failed = True
-                        if action["action"] == "open_page":
+                    def run_step_attempt(selector_override: str | None = None) -> bool:
+                        nonlocal http_status, final_url, screenshot_rel, screenshot_captured_at, abort_execution
+                        current_action = plan[index - 1]
+                        current_label = step_names[index - 1]
+                        attempt_action = dict(current_action)
+                        if selector_override:
+                            attempt_action["selector"] = selector_override
+                        analyzer.start_step(step_id, current_label)
+                        attempt_start = time.perf_counter()
+                        attempt_failed = False
+                        try:
+                            result_status = _execute_action(page, attempt_action, url, screenshot_path)
+                            if result_status is not None:
+                                http_status = result_status
+                                final_url = page.url
+                            if attempt_action["action"] == "capture" and screenshot_path.exists():
+                                screenshot_rel = f"/storage/screenshots/{screenshot_filename}"
+                                screenshot_captured_at = datetime.now(timezone.utc).isoformat()
+                        except TargetNotFoundError as exc:
+                            attempt_failed = True
                             analyzer.complete_step("failed")
                             analyzer.add_failure(
-                                "timeout",
-                                f"Timed out while executing '{step_label}'.",
-                                "high",
-                            )
-                            _record_failure_evidence(
-                                step_id, step_label, action, "timeout", f"Timed out while executing '{step_label}'."
-                            )
-                            analyzer.skip_remaining_steps()
-                            abort_execution = True
-                        else:
-                            analyzer.complete_step("failed")
-                            analyzer.add_failure(
-                                "timeout",
-                                f"Timed out while executing '{step_label}'.",
+                                "element_not_found",
+                                str(exc),
                                 "medium",
+                                **_failure_metadata(attempt_action, exc, context_summary),
                             )
                             _record_failure_evidence(
-                                step_id, step_label, action, "timeout", f"Timed out while executing '{step_label}'."
+                                step_id, current_label, attempt_action, "element_not_found", str(exc)
                             )
-                    except PlaywrightError as exc:
-                        action_failed = True
-                        analyzer.complete_step("failed")
-                        message = str(exc).splitlines()[0]
-                        if action["action"] == "open_page" or "net::ERR" in str(exc) or "NS_ERROR" in str(exc):
-                            analyzer.add_failure(
-                                "navigation_error",
-                                f"Could not complete '{step_label}': {message}",
-                                "high",
-                            )
-                            _record_failure_evidence(
-                                step_id, step_label, action, "navigation_error", message
-                            )
-                            analyzer.skip_remaining_steps()
-                            abort_execution = True
-                        else:
+                        except PlaywrightTimeoutError:
+                            attempt_failed = True
+                            if attempt_action["action"] == "open_page":
+                                analyzer.complete_step("failed")
+                                analyzer.add_failure(
+                                    "timeout",
+                                    f"Timed out while executing '{step_label}'.",
+                                    "high",
+                                )
+                                _record_failure_evidence(
+                                    step_id,
+                                    step_label,
+                                    attempt_action,
+                                    "timeout",
+                                    f"Timed out while executing '{step_label}'.",
+                                )
+                                analyzer.skip_remaining_steps()
+                                abort_execution = True
+                            else:
+                                analyzer.complete_step("failed")
+                                analyzer.add_failure(
+                                    "timeout",
+                                    f"Timed out while executing '{step_label}'.",
+                                    "medium",
+                                )
+                                _record_failure_evidence(
+                                    step_id,
+                                    step_label,
+                                    attempt_action,
+                                    "timeout",
+                                    f"Timed out while executing '{step_label}'.",
+                                )
+                        except PlaywrightError as exc:
+                            attempt_failed = True
+                            analyzer.complete_step("failed")
+                            message = str(exc).splitlines()[0]
+                            if (
+                                attempt_action["action"] == "open_page"
+                                or "net::ERR" in str(exc)
+                                or "NS_ERROR" in str(exc)
+                            ):
+                                analyzer.add_failure(
+                                    "navigation_error",
+                                    f"Could not complete '{step_label}': {message}",
+                                    "high",
+                                )
+                                _record_failure_evidence(
+                                    step_id, step_label, attempt_action, "navigation_error", message
+                                )
+                                analyzer.skip_remaining_steps()
+                                abort_execution = True
+                            else:
+                                analyzer.add_failure(
+                                    "javascript_error",
+                                    f"Action '{step_label}' failed: {message}",
+                                    "medium",
+                                )
+                                _record_failure_evidence(
+                                    step_id, step_label, attempt_action, "javascript_error", message
+                                )
+                        except Exception as exc:
+                            attempt_failed = True
+                            analyzer.complete_step("failed")
                             analyzer.add_failure(
                                 "javascript_error",
-                                f"Action '{step_label}' failed: {message}",
+                                f"Action '{step_label}' failed: {exc}",
                                 "medium",
                             )
                             _record_failure_evidence(
-                                step_id, step_label, action, "javascript_error", message
+                                step_id, step_label, attempt_action, "javascript_error", str(exc)
                             )
-                    except Exception as exc:
-                        action_failed = True
-                        analyzer.complete_step("failed")
-                        analyzer.add_failure(
-                            "javascript_error",
-                            f"Action '{step_label}' failed: {exc}",
-                            "medium",
-                        )
-                        _record_failure_evidence(
-                            step_id, step_label, action, "javascript_error", str(exc)
-                        )
 
-                    if not action_failed:
-                        action_duration_ms = int((time.perf_counter() - step_start) * 1000)
-                        assertion_ctx = AssertionContext(
-                            page=page,
-                            action=action,
-                            url=url,
-                            http_status=http_status if action["action"] == "open_page" else None,
-                            action_duration_ms=action_duration_ms,
-                            screenshot_path=screenshot_path if action["action"] == "capture" else None,
-                        )
-                        assertion_results = assertion_engine.run_for_action(assertion_ctx)
-
-                        if assertion_engine.all_passed(assertion_results):
-                            analyzer.complete_step("passed", assertions=assertion_results)
-                        else:
-                            analyzer.complete_step("failed", assertions=assertion_results)
-                            for reason in assertion_engine.failure_reasons(assertion_results):
-                                analyzer.add_failure(
+                        if not attempt_failed:
+                            action_duration_ms = int((time.perf_counter() - attempt_start) * 1000)
+                            assertion_ctx = AssertionContext(
+                                page=page,
+                                action=attempt_action,
+                                url=url,
+                                http_status=http_status if attempt_action["action"] == "open_page" else None,
+                                action_duration_ms=action_duration_ms,
+                                screenshot_path=screenshot_path if attempt_action["action"] == "capture" else None,
+                            )
+                            assertion_results = assertion_engine.run_for_action(assertion_ctx)
+                            if assertion_engine.all_passed(assertion_results):
+                                analyzer.complete_step("passed", assertions=assertion_results)
+                            else:
+                                analyzer.complete_step("failed", assertions=assertion_results)
+                                for reason in assertion_engine.failure_reasons(assertion_results):
+                                    analyzer.add_failure(
+                                        "assertion_failure",
+                                        reason,
+                                        "medium",
+                                        expected_element=attempt_action.get("label")
+                                        or attempt_action.get("target"),
+                                        selector=attempt_action.get("selector"),
+                                        available_context=context_summary,
+                                    )
+                                _record_failure_evidence(
+                                    step_id,
+                                    step_label,
+                                    attempt_action,
                                     "assertion_failure",
-                                    reason,
-                                    "medium",
-                                    expected_element=action.get("label") or action.get("target"),
-                                    selector=action.get("selector"),
-                                    available_context=context_summary,
+                                    "; ".join(assertion_engine.failure_reasons(assertion_results)),
                                 )
-                            _record_failure_evidence(
-                                step_id,
-                                step_label,
-                                action,
-                                "assertion_failure",
-                                "; ".join(assertion_engine.failure_reasons(assertion_results)),
+                        return bool(analyzer.steps) and analyzer.steps[-1]["status"] == "passed"
+
+                    def rerun_step(selector_override: str | None = None) -> bool:
+                        analyzer.replace_last_step()
+                        analyzer.remove_last_failure()
+                        return run_step_attempt(selector_override)
+
+                    step_start = time.perf_counter()
+                    action_failed = not run_step_attempt()
+
+                    if (
+                        intelligence_orchestrator is not None
+                        and page
+                        and not abort_execution
+                        and action["action"] != "open_page"
+                    ):
+                        adaptive_result = _apply_adaptive_actions(
+                            intelligence_orchestrator=intelligence_orchestrator,
+                            analyzer=analyzer,
+                            page=page,
+                            index=index,
+                            step_label=step_label,
+                            action=action,
+                            title=title,
+                            http_status=http_status,
+                            js_errors=js_errors,
+                            action_failed=action_failed,
+                            step_start=step_start,
+                            total_steps=len(plan),
+                            rerun_step=rerun_step,
+                            plan=plan,
+                            step_names=step_names,
+                        )
+                        if adaptive_result == "abort":
+                            abort_execution = True
+                        elif adaptive_result == "replay_step":
+                            continue
+                    elif intelligence_orchestrator is not None:
+                        intelligence_orchestrator.after_step(
+                            _intelligence_step_payload(
+                                index=index,
+                                step_label=step_label,
+                                action=action,
+                                analyzer=analyzer,
+                                page=page,
+                                title=title,
+                                http_status=http_status,
+                                js_errors=js_errors,
+                                action_failed=action_failed,
+                                step_start=step_start,
+                                total_steps=len(plan),
                             )
+                        )
+
+                    index += 1
 
                 if page and not abort_execution:
                     try:
@@ -510,6 +782,14 @@ def _execute_sync(
         screenshot_captured_at=screenshot_captured_at,
     )
     result["_execution_evidence"] = evidence_buffer.export()
+    if intelligence_orchestrator is not None:
+        export = intelligence_orchestrator.export()
+        result["_execution_intelligence"] = export
+        if intelligence_orchestrator.context is not None:
+            result["execution_intelligence_log"] = list(
+                intelligence_orchestrator.context.execution_intelligence_log
+            )
+        result["execution_intelligence"] = build_summary_from_export(export)
     return result
 
 
@@ -539,6 +819,14 @@ async def run_test(url: str, goal: str) -> dict:
     context_summary = ContextIndex(website_context).summary()
     plan_data = await generate_test_plan(url, goal, website_context, website_analysis=website_analysis)
 
+    intelligence_input = {
+        "goal": goal,
+        "website_analysis": plan_data.get("website_analysis"),
+        "strategy": plan_data.get("testing_strategy"),
+        "planner_metadata": plan_data.get("metadata"),
+        "website_context": website_context,
+    }
+
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(
@@ -549,6 +837,7 @@ async def run_test(url: str, goal: str) -> dict:
             plan_data["plan"],
             plan_data["source"],
             context_summary,
+            intelligence_input,
         )
     except BrokenProcessPool as exc:
         logger.warning("[Runner] Process pool broken, resetting and retrying once: %s", exc)
@@ -561,6 +850,7 @@ async def run_test(url: str, goal: str) -> dict:
             plan_data["plan"],
             plan_data["source"],
             context_summary,
+            intelligence_input,
         )
     if plan_data.get("metadata"):
         result["ai_plan_metadata"] = plan_data["metadata"]

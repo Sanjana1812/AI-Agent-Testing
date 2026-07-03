@@ -26,6 +26,7 @@ class TestRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    execution_intelligence_log: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

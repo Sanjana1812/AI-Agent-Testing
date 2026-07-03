@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { FormEvent, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { runTest } from '../api/client'
 import { saveLastRunResult } from '../api/resultStorage'
+import type { RunTestPayload } from '../types'
 
 export default function RunTest() {
   const navigate = useNavigate()
@@ -10,7 +11,7 @@ export default function RunTest() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  async function handleSubmit(event) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     const trimmedUrl = url.trim()
@@ -26,11 +27,12 @@ export default function RunTest() {
 
     try {
       const data = await runTest(trimmedUrl, trimmedGoal)
-      const payload = { result: data, url: trimmedUrl, goal: trimmedGoal }
+      const payload: RunTestPayload = { result: data, url: trimmedUrl, goal: trimmedGoal }
       saveLastRunResult(payload)
       navigate('/results', { state: payload })
     } catch (err) {
-      setError(err.message || 'Something went wrong')
+      const message = err instanceof Error ? err.message : 'Something went wrong'
+      setError(message)
     } finally {
       setLoading(false)
     }

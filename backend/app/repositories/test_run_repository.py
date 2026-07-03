@@ -28,6 +28,7 @@ class TestRunRepository(BaseRepository):
         started_at: datetime,
         completed_at: datetime,
         duration_ms: int,
+        execution_intelligence_log: dict | None = None,
     ) -> TestRun:
         run = TestRun(
             id=run_id,
@@ -40,6 +41,7 @@ class TestRunRepository(BaseRepository):
             started_at=started_at,
             completed_at=completed_at,
             duration_ms=duration_ms,
+            execution_intelligence_log=execution_intelligence_log,
         )
         self.db.add(run)
         self.db.flush()

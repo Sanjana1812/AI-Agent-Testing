@@ -43,6 +43,7 @@ async def run_test(payload: RunTestRequest, db: Session = Depends(get_db)) -> Ru
     website_analysis = result.pop("_website_analysis", None)
     testing_strategy = result.pop("_testing_strategy", None)
     execution_evidence = result.pop("_execution_evidence", None)
+    result.pop("_execution_intelligence", None)
     source_url = result.pop("_source_url", str(payload.url))
     context_extracted = not is_context_empty(website_context)
     context_summary = build_website_analysis(website_context, context_extracted=context_extracted) if website_context else None

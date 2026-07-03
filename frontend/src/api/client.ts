@@ -1,11 +1,12 @@
 import { API_BASE } from './config'
+import type { FastApiErrorDetail, RunTestResponse } from '../types'
 
-function formatApiError(detail, status) {
+function formatApiError(detail: FastApiErrorDetail | undefined, status: number): string {
   if (typeof detail === 'string' && detail.trim()) return detail
   if (Array.isArray(detail)) {
     const parts = detail
       .map((item) => (typeof item?.msg === 'string' ? item.msg : null))
-      .filter(Boolean)
+      .filter((item): item is string => Boolean(item))
     if (parts.length) return parts.join('; ')
   }
   if (status === 502 || status === 503 || status === 504) {
@@ -17,8 +18,12 @@ function formatApiError(detail, status) {
   return `Request failed (${status}). Check that the backend is running on port 8001.`
 }
 
-export async function runTest(url, goal) {
-  let response
+interface ErrorResponseBody {
+  detail?: FastApiErrorDetail
+}
+
+export async function runTest(url: string, goal: string): Promise<RunTestResponse> {
+  let response: Response
   try {
     response = await fetch(`${API_BASE}/run`, {
       method: 'POST',
@@ -30,9 +35,9 @@ export async function runTest(url, goal) {
   }
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}))
+    const error = (await response.json().catch(() => ({}))) as ErrorResponseBody
     throw new Error(formatApiError(error.detail, response.status))
   }
 
-  return response.json()
+  return response.json() as Promise<RunTestResponse>
 }

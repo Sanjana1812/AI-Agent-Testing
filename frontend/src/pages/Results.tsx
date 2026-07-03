@@ -1,25 +1,41 @@
-import { useState } from 'react'
+import { ReactNode, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { API_BASE } from '../api/config'
 import { loadLastRunResult } from '../api/resultStorage'
+import type {
+  ActionPill,
+  AiWebsiteAnalysisView,
+  CollapsibleReasoningProps,
+  ConfidencePresentation,
+  CoverageStatus,
+  ExecutionStats,
+  FailureCardProps,
+  IconName,
+  IconProps,
+  MissingValueKind,
+  PlannerConfidence,
+  RunDisplayStatus,
+  RunDisplayVariant,
+  SectionHeaderProps,
+} from '../types/results'
+import type {
+  ExecutionFailure,
+  ExecutionStep,
+  PlannerMetadata,
+  PlanStep,
+  RunTestPayload,
+  RunTestResponse,
+  WebsiteContextSummary,
+} from '../types/api'
 import './Results.css'
 
-function formatDuration(ms) {
+function formatDuration(ms: number | null | undefined): string | null {
   if (ms == null) return null
   if (ms < 1000) return `${ms} ms`
   return `${(ms / 1000).toFixed(2)} s`
 }
 
-function parseDurationMs(value) {
-  if (typeof value === 'number') return value
-  if (value == null || value === '' || value === '—') return 0
-  const trimmed = String(value).trim()
-  if (trimmed.endsWith('ms')) return parseFloat(trimmed) || 0
-  if (trimmed.endsWith('s')) return (parseFloat(trimmed) || 0) * 1000
-  return 0
-}
-
-function MissingValue({ kind = 'detected' }) {
+function MissingValue({ kind = 'detected' }: { kind?: MissingValueKind }) {
   return (
     <span className="results-field-value results-field-value--missing">
       {kind === 'captured' ? 'Not captured' : 'Not detected'}
@@ -27,21 +43,24 @@ function MissingValue({ kind = 'detected' }) {
   )
 }
 
-function displayFieldValue(value, kind = 'detected') {
+function displayFieldValue(
+  value: ReactNode,
+  kind: MissingValueKind = 'detected',
+): ReactNode {
   if (value == null || value === '' || value === '—') {
     return <MissingValue kind={kind} />
   }
   return value
 }
 
-function displayMetricValue(value) {
+function displayMetricValue(value: ReactNode): ReactNode {
   if (value == null || value === '—') {
     return <span className="results-metric-card__value results-field-value--missing">Not detected</span>
   }
   return value
 }
 
-function displayDurationValue(ms) {
+function displayDurationValue(ms: number | null | undefined): ReactNode {
   const formatted = formatDuration(ms)
   if (formatted == null) {
     return <span className="results-metric-card__value results-field-value--missing">Not detected</span>
@@ -49,21 +68,21 @@ function displayDurationValue(ms) {
   return formatted
 }
 
-function getPlannerSourceLabel(source) {
+function getPlannerSourceLabel(source: string | null | undefined): string {
   if (!source || source === 'fallback') return 'Fallback'
   return 'AI Planner'
 }
 
-function isFallbackSource(source) {
+function isFallbackSource(source: string | null | undefined): boolean {
   return !source || source === 'fallback'
 }
 
-function humanPlanLabel(step) {
+function humanPlanLabel(step: PlanStep | null | undefined): string {
   if (step?.label) return step.label
   return step?.action?.replace(/_/g, ' ') || 'Step'
 }
 
-function contextPageName(url) {
+function contextPageName(url: string | null | undefined): string | null {
   if (!url) return null
   try {
     const path = new URL(url).pathname.replace(/\/$/, '') || '/'
@@ -75,7 +94,7 @@ function contextPageName(url) {
   }
 }
 
-function computeAverageConfidence(plan) {
+function computeAverageConfidence(plan: PlanStep[] | null | undefined): number | null {
   const scores = (plan || [])
     .map((step) => step.selector_confidence)
     .filter((value) => typeof value === 'number')
@@ -83,7 +102,7 @@ function computeAverageConfidence(plan) {
   return Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length)
 }
 
-function getPlannerConfidence(result) {
+function getPlannerConfidence(result: RunTestResponse): PlannerConfidence | null {
   const meta = result?.ai_plan_metadata
   if (meta?.planner_confidence != null) {
     return {
@@ -108,7 +127,7 @@ function getPlannerConfidence(result) {
   return null
 }
 
-function getConfidencePresentation(value) {
+function getConfidencePresentation(value: number): ConfidencePresentation {
   if (value >= 80) {
     return { label: 'High confidence', badgeClass: 'results-badge--confidence-high', barColor: '#639922' }
   }
@@ -121,7 +140,10 @@ function getConfidencePresentation(value) {
   return { label: 'Very low confidence', badgeClass: 'results-badge--confidence-very-low', barColor: '#A32D2D' }
 }
 
-function getConfidencePresentationFromLabel(label, value) {
+function getConfidencePresentationFromLabel(
+  label: string,
+  value: number,
+): ConfidencePresentation {
   const normalized = String(label || '').toLowerCase()
   if (normalized.includes('high')) {
     return { label, badgeClass: 'results-badge--confidence-high', barColor: '#639922' }
@@ -135,7 +157,7 @@ function getConfidencePresentationFromLabel(label, value) {
   return getConfidencePresentation(value)
 }
 
-function sanitizeJourneyLabel(label) {
+function sanitizeJourneyLabel(label: string | null | undefined): string {
   if (!label || typeof label !== 'string') return 'Interaction'
   let cleaned = label.trim()
   if (/show\s*\/?\s*hide\s+shortcuts?/i.test(cleaned)) return 'Interaction'
@@ -146,8 +168,8 @@ function sanitizeJourneyLabel(label) {
   return cleaned
 }
 
-function truncateReasoning(text, maxSentences = 3) {
-  if (!text) return text
+function truncateReasoning(text: string | null | undefined, maxSentences = 3): string {
+  if (!text) return ''
   const sentences = String(text)
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
@@ -158,10 +180,13 @@ function truncateReasoning(text, maxSentences = 3) {
   return `${sentences.slice(0, maxSentences).join(' ')}`
 }
 
-function uniqueStrategyReasoning(strategyText, reasoningText) {
+function uniqueStrategyReasoning(
+  strategyText: string | null | undefined,
+  reasoningText: string | null | undefined,
+): string | null {
   if (!reasoningText) return null
   if (!strategyText) return reasoningText
-  const normalize = (value) => String(value).toLowerCase().replace(/\s+/g, ' ').trim()
+  const normalize = (value: string) => String(value).toLowerCase().replace(/\s+/g, ' ').trim()
   if (normalize(strategyText) === normalize(reasoningText)) return null
   const strategySentences = strategyText
     .split(/[.!?]+/)
@@ -175,7 +200,10 @@ function uniqueStrategyReasoning(strategyText, reasoningText) {
   return `${uniqueSentences.join('. ')}.`
 }
 
-function buildJourneyFlow(meta, plan) {
+function buildJourneyFlow(
+  meta: PlannerMetadata | null | undefined,
+  plan: PlanStep[] | null | undefined,
+): string[] {
   if (meta?.generated_journey?.length) {
     return meta.generated_journey.map(sanitizeJourneyLabel)
   }
@@ -195,7 +223,7 @@ function buildJourneyFlow(meta, plan) {
   return flow.length > 1 ? flow : []
 }
 
-function buildExecutionStats(result) {
+function buildExecutionStats(result: RunTestResponse): ExecutionStats {
   const plan = result?.ai_plan || []
   const steps = result?.steps || []
   const meta = result?.ai_plan_metadata || {}
@@ -223,19 +251,19 @@ function buildExecutionStats(result) {
   }
 }
 
-function formatStepLabel(step) {
+function formatStepLabel(step: ExecutionStep | null | undefined): string {
   if (!step?.step) return 'Step'
   const [action, detail] = step.step.split(':')
   if (detail) return detail
   return action.replace(/_/g, ' ')
 }
 
-function truncateRunId(id) {
+function truncateRunId(id: string | null | undefined): string | null | undefined {
   if (!id || id.length <= 16) return id
   return `${id.slice(0, 8)}…${id.slice(-6)}`
 }
 
-function getHttpStatusDotClass(status) {
+function getHttpStatusDotClass(status: number | string | null | undefined): string | null {
   if (status == null || status === '—') return null
   const code = Number(status)
   if (Number.isNaN(code) || code < 100) return null
@@ -246,7 +274,7 @@ function getHttpStatusDotClass(status) {
   return null
 }
 
-function formatHttpStatus(status) {
+function formatHttpStatus(status: number | null | undefined): ReactNode {
   const code = Number(status)
   if (status == null || status === 0 || Number.isNaN(code) || code < 100) {
     return (
@@ -264,7 +292,7 @@ function formatHttpStatus(status) {
   )
 }
 
-function getRunDisplayStatus(result) {
+function getRunDisplayStatus(result: RunTestResponse | null | undefined): RunDisplayStatus {
   if (!result) {
     return { label: 'Unknown', variant: 'unknown' }
   }
@@ -288,12 +316,15 @@ function getRunDisplayStatus(result) {
   return { label: 'Unknown', variant: 'unknown' }
 }
 
-function formatExecutionStatusBadge(displayStatus) {
+function formatExecutionStatusBadge(displayStatus: RunDisplayStatus | null): ReactNode {
   if (!displayStatus?.label) {
     return <MissingValue kind="detected" />
   }
 
-  const stylesByVariant = {
+  const stylesByVariant: Record<
+    RunDisplayVariant,
+    { background: string; color: string; border: string; icon: IconName | null }
+  > = {
     pass: {
       background: '#EAF3DE',
       color: '#27500A',
@@ -350,62 +381,7 @@ function formatExecutionStatusBadge(displayStatus) {
   )
 }
 
-function formatExecutionStatus(status) {
-  if (!status) {
-    return <MissingValue kind="detected" />
-  }
-  const lower = String(status).toLowerCase()
-  if (lower === 'failed' || lower === 'error') {
-    return (
-      <span
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '5px',
-          fontSize: '12px',
-          fontWeight: 500,
-          padding: '3px 10px',
-          borderRadius: '6px',
-          background: '#FCEBEB',
-          color: '#791F1F',
-          border: '0.5px solid #F7C1C1',
-        }}
-      >
-        <i className="ti ti-x" style={{ fontSize: '11px' }} aria-hidden="true" />
-        Failed
-      </span>
-    )
-  }
-  if (lower === 'success' || lower === 'passed') {
-    return (
-      <span
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '5px',
-          fontSize: '12px',
-          fontWeight: 500,
-          padding: '3px 10px',
-          borderRadius: '6px',
-          background: '#EAF3DE',
-          color: '#27500A',
-          border: '0.5px solid #C0DD97',
-        }}
-      >
-        <i className="ti ti-check" style={{ fontSize: '11px' }} aria-hidden="true" />
-        Success
-      </span>
-    )
-  }
-  const capitalized = lower.charAt(0).toUpperCase() + lower.slice(1)
-  return (
-    <span className="results-field-value" style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>
-      {capitalized}
-    </span>
-  )
-}
-
-function isFailedLaunch(executionStatus, httpStatus) {
+function isFailedLaunch(executionStatus: string | null | undefined, httpStatus: number | null | undefined): boolean {
   const lower = String(executionStatus || '').toLowerCase()
   const isFailed = lower === 'failed' || lower === 'error'
   const code = Number(httpStatus)
@@ -413,14 +389,14 @@ function isFailedLaunch(executionStatus, httpStatus) {
   return isFailed && noHttp
 }
 
-function getActionPill(action) {
+function getActionPill(action: string | null | undefined): ActionPill {
   if (action === 'open_page') {
     return { label: 'Navigate', className: 'results-action-pill--navigate', icon: 'world' }
   }
-  if (['verify_visible', 'verify_text', 'verify_form'].includes(action)) {
+  if (['verify_visible', 'verify_text', 'verify_form'].includes(action ?? '')) {
     return { label: 'Verify', className: 'results-action-pill--verify', icon: 'eye' }
   }
-  if (['click', 'fill'].includes(action)) {
+  if (['click', 'fill'].includes(action ?? '')) {
     return { label: 'Interact', className: 'results-action-pill--click', icon: 'cursor' }
   }
   if (action === 'scroll') {
@@ -435,7 +411,10 @@ function getActionPill(action) {
   return { label: action?.replace(/_/g, ' ') || 'Step', className: 'results-action-pill--wait', icon: 'clock' }
 }
 
-function getTimelineSubline(planStep, execStep) {
+function getTimelineSubline(
+  planStep: PlanStep | null | undefined,
+  execStep: ExecutionStep | null | undefined,
+): string {
   const action = planStep?.action || execStep?.step?.split(':')[0] || ''
   const target = planStep?.target
   if (['verify_visible', 'verify_text', 'verify_form'].includes(action)) {
@@ -452,7 +431,7 @@ function getTimelineSubline(planStep, execStep) {
   return action.replace(/_/g, ' ')
 }
 
-function formatError(raw) {
+function formatError(raw: string | null | undefined): string {
   if (!raw) return ''
   return String(raw)
     .replace(/[║═╔╗╚╝╠╣╦╩╬│─┌┐└┘├┤┬┴┼\u2500-\u257F\u2550-\u256C]/g, '')
@@ -461,7 +440,7 @@ function formatError(raw) {
     .trim()
 }
 
-function isBrowserCrashError(message) {
+function isBrowserCrashError(message: string | null | undefined): boolean {
   if (!message) return false
   const lower = String(message).toLowerCase()
   return (
@@ -476,21 +455,21 @@ function isBrowserCrashError(message) {
 const BROWSER_CRASH_SUMMARY =
   'Browser crashed during execution — the Playwright executable was not found. Run: npx playwright install'
 
-function getFailureSummary(failure) {
+function getFailureSummary(failure: ExecutionFailure): string {
   if (isBrowserCrashError(failure.message) || isBrowserCrashError(failure.user_message)) {
     return BROWSER_CRASH_SUMMARY
   }
   return failure.user_message || failure.message || 'The test encountered an unexpected issue.'
 }
 
-function parseMs(str) {
+function parseMs(str: string | null | undefined): number {
   if (!str) return 0
   if (str.includes(' s')) return parseFloat(str) * 1000
   if (str.includes(' ms')) return parseFloat(str)
   return 0
 }
 
-function isWebsiteIntelEmpty(analysis) {
+function isWebsiteIntelEmpty(analysis: WebsiteContextSummary | null | undefined): boolean {
   if (!analysis) return false
   if (analysis.context_extracted === false) return true
   return (
@@ -504,13 +483,13 @@ function isWebsiteIntelEmpty(analysis) {
   )
 }
 
-function formatCoverageStatus(status) {
+function formatCoverageStatus(status: string): CoverageStatus {
   if (status === 'tested') return { label: 'Tested', className: 'results-badge--pass' }
   if (status === 'not_tested') return { label: 'Not tested', className: 'results-badge--fail' }
   return { label: 'N/A', className: 'results-badge--fallback' }
 }
 
-function formatListValue(items) {
+function formatListValue(items: string[] | null | undefined): ReactNode {
   if (!items || !items.length) {
     return <MissingValue kind="detected" />
   }
@@ -525,7 +504,7 @@ function formatListValue(items) {
   )
 }
 
-function formatReasoningValue(value) {
+function formatReasoningValue(value: string | string[] | null | undefined): ReactNode {
   if (value == null || value === '' || value === '—') {
     return <span className="results-field-value results-field-value--missing">Not detected</span>
   }
@@ -538,7 +517,7 @@ function formatReasoningValue(value) {
   return value
 }
 
-function getSeverityBadgeClass(severity) {
+function getSeverityBadgeClass(severity: string | null | undefined): string {
   const normalized = String(severity || 'low').toLowerCase()
   if (normalized === 'critical') return 'results-badge--severity-critical'
   if (normalized === 'high') return 'results-badge--severity-high'
@@ -546,7 +525,7 @@ function getSeverityBadgeClass(severity) {
   return 'results-badge--severity-low'
 }
 
-function getSeverityLabel(severity) {
+function getSeverityLabel(severity: string | null | undefined): string {
   const normalized = String(severity || 'low').toLowerCase()
   if (normalized === 'critical') return 'Critical'
   if (normalized === 'high') return 'High'
@@ -554,8 +533,14 @@ function getSeverityLabel(severity) {
   return 'Low'
 }
 
-function Icon({ name, size = 16, className = '' }) {
-  const props = { width: size, height: size, viewBox: '0 0 24 24', className: `results-icon ${className}` }
+function Icon({ name, size = 16, className = '', ...rest }: IconProps) {
+  const props = {
+    width: size,
+    height: size,
+    viewBox: '0 0 24 24',
+    className: `results-icon ${className}`,
+    ...rest,
+  }
   switch (name) {
     case 'copy':
       return (
@@ -670,7 +655,7 @@ function Icon({ name, size = 16, className = '' }) {
   }
 }
 
-function SectionHeader({ title, subtitle, meta }) {
+function SectionHeader({ title, subtitle, meta }: SectionHeaderProps) {
   return (
     <div className="results-section__header">
       <div>
@@ -682,7 +667,10 @@ function SectionHeader({ title, subtitle, meta }) {
   )
 }
 
-function getFailureForStep(result, stepId) {
+function getFailureForStep(
+  result: RunTestResponse | null | undefined,
+  stepId: string | number,
+): ExecutionFailure | null {
   if (!result?.failures?.length) return null
   const normalizedId = String(stepId)
   return (
@@ -692,7 +680,7 @@ function getFailureForStep(result, stepId) {
   )
 }
 
-function getStepExpectedAction(planStep) {
+function getStepExpectedAction(planStep: PlanStep | null | undefined): string | null {
   if (!planStep) return null
   const action = planStep.action
   const target = planStep.target
@@ -717,7 +705,10 @@ function getStepExpectedAction(planStep) {
   return planStep.label || null
 }
 
-function getStepActualResult(step, failure) {
+function getStepActualResult(
+  step: ExecutionStep | null | undefined,
+  failure: ExecutionFailure | null | undefined,
+): string | null {
   if (failure?.user_message) {
     const observedMatch = String(failure.user_message).match(/Observed:\s*([\s\S]*?)(?:\n\n(?:Likely Cause|Note):|$)/i)
     if (observedMatch?.[1]) {
@@ -733,12 +724,12 @@ function getStepActualResult(step, failure) {
   return null
 }
 
-function isStructuredFailureMessage(message) {
+function isStructuredFailureMessage(message: string | null | undefined): boolean {
   if (!message) return false
   return /^(Assertion Failed|Expected:)/m.test(String(message))
 }
 
-function FailureCard({ failure, index, totalSteps, stepLabel, stepId }) {
+function FailureCard({ failure, index, totalSteps, stepLabel, stepId }: FailureCardProps) {
   const [expanded, setExpanded] = useState(false)
   const cleanError = formatError(failure.message)
   const summary = getFailureSummary(failure)
@@ -800,7 +791,7 @@ function FailureCard({ failure, index, totalSteps, stepLabel, stepId }) {
 }
 
 export default function Results() {
-  const { state } = useLocation()
+  const { state } = useLocation() as { state?: RunTestPayload | null }
   const runState = state ?? loadLastRunResult()
   const result = runState?.result
   const sourceUrl = runState?.url
@@ -834,7 +825,7 @@ export default function Results() {
   const screenshotBrowser = result?.browser ?? meta?.browser
   const screenshotCapturedAt = result?.screenshot_captured_at ?? null
   const contextExtracted = websiteAnalysis?.context_extracted !== false
-  const aiWebsiteAnalysis =
+  const aiWebsiteAnalysis: AiWebsiteAnalysisView | null =
     meta?.website_type || websiteAnalysis?.website_type || !contextExtracted
       ? {
           websiteType: meta?.website_type ?? websiteAnalysis?.website_type,
@@ -842,13 +833,13 @@ export default function Results() {
           primaryGoal: meta?.primary_goal ?? websiteAnalysis?.primary_goal,
           targetAudience: meta?.target_audience ?? websiteAnalysis?.target_audience,
           recommendedJourneys:
-            meta?.generated_journey?.length > 0
-              ? meta.generated_journey.filter((item) => item !== 'Screenshot')
-              : meta?.recommended_test_flow?.length > 0
-                ? meta.recommended_test_flow
+            (meta?.generated_journey?.length ?? 0) > 0
+              ? meta?.generated_journey?.filter((item) => item !== 'Screenshot')
+              : (meta?.recommended_test_flow?.length ?? 0) > 0
+                ? meta?.recommended_test_flow
                 : websiteAnalysis?.recommended_test_flow,
-          highRiskAreas: meta?.high_risk_areas?.length
-            ? meta.high_risk_areas
+          highRiskAreas: (meta?.high_risk_areas?.length ?? 0) > 0
+            ? meta?.high_risk_areas
             : websiteAnalysis?.high_risk_areas,
           testingStrategy: meta?.testing_strategy ?? websiteAnalysis?.testing_strategy,
           analysisConfidence: meta?.analysis_confidence ?? websiteAnalysis?.analysis_confidence,
@@ -863,12 +854,12 @@ export default function Results() {
     meta?.estimated_coverage_percent ?? websiteAnalysis?.estimated_coverage_percent
   const contextExtractionError = websiteAnalysis?.extraction_error
   const allConfidenceSignalsZero =
-    confidenceBreakdown?.signals?.length > 0 &&
-    confidenceBreakdown.signals.every((signal) => (signal.contribution || 0) === 0)
+    (confidenceBreakdown?.signals?.length ?? 0) > 0 &&
+    (confidenceBreakdown?.signals ?? []).every((signal) => (signal.contribution || 0) === 0)
   const evidencePackage = result?.evidence_package
   const diagnosisReport = result?.diagnosis_report
   const showConfidenceBreakdown =
-    confidenceBreakdown?.signals?.length > 0 &&
+    (confidenceBreakdown?.signals?.length ?? 0) > 0 &&
     contextExtracted &&
     !allConfidenceSignalsZero
   const uniqueStrategyReasoningText = uniqueStrategyReasoning(
@@ -897,7 +888,7 @@ export default function Results() {
     }
   }
 
-  function statNumberClass(value, highlight = false) {
+  function statNumberClass(value: ReactNode, highlight = false): string {
     if (highlight && Number(value) > 0) return 'results-metric-card__value results-metric-card__value--highlight'
     if (Number(value) === 0) return 'results-metric-card__value results-metric-card__value--muted'
     return 'results-metric-card__value'
@@ -1229,7 +1220,7 @@ export default function Results() {
             </section>
           )}
 
-          {!contextExtracted && confidenceBreakdown?.signals?.length > 0 && (
+          {!contextExtracted && (confidenceBreakdown?.signals?.length ?? 0) > 0 && (
             <section className="results-section">
               <SectionHeader
                 title="AI confidence breakdown"
@@ -1256,14 +1247,14 @@ export default function Results() {
                 <div>
                   <p className="results-field-label">Overall confidence</p>
                   <p className="results-field-value">
-                    {confidenceBreakdown.total_confidence != null
-                      ? `${Math.round(confidenceBreakdown.total_confidence * 100)}%`
+                    {confidenceBreakdown?.total_confidence != null
+                      ? `${Math.round((confidenceBreakdown?.total_confidence ?? 0) * 100)}%`
                       : displayFieldValue(null)}
                   </p>
                 </div>
               </div>
               <div className="results-intel-grid">
-                {confidenceBreakdown.signals.map((signal) => (
+                {(confidenceBreakdown?.signals ?? []).map((signal) => (
                   <div key={signal.signal} className="results-intel-tile">
                     <p className="results-intel-tile__label">{signal.signal}</p>
                     <p className="results-intel-tile__value results-intel-tile__value--active">
@@ -1278,7 +1269,7 @@ export default function Results() {
             </section>
           )}
 
-          {coverageReport?.areas?.length > 0 && (
+          {(coverageReport?.areas?.length ?? 0) > 0 && (
             <section className="results-section">
               <SectionHeader
                 title="Test coverage"
@@ -1290,7 +1281,7 @@ export default function Results() {
                 }
               />
               <div className="results-intel-grid">
-                {coverageReport.areas.map((area) => {
+                {(coverageReport?.areas ?? []).map((area) => {
                   const status = formatCoverageStatus(area.status)
                   return (
                     <div key={area.area} className="results-intel-tile">
@@ -1357,22 +1348,22 @@ export default function Results() {
                 </div>
               )}
 
-              {evidencePackage.console_logs?.length > 0 && (
+              {(evidencePackage.console_logs?.length ?? 0) > 0 && (
                 <details className="results-step-details" style={{ marginTop: '1rem' }}>
                   <summary>Console logs</summary>
                   <pre style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}>
-                    {evidencePackage.console_logs
+                    {(evidencePackage.console_logs ?? [])
                       .map((entry) => `[${entry.type}] ${entry.text}`)
                       .join('\n')}
                   </pre>
                 </details>
               )}
 
-              {evidencePackage.network_logs?.length > 0 && (
+              {(evidencePackage.network_logs?.length ?? 0) > 0 && (
                 <details className="results-step-details" style={{ marginTop: '0.75rem' }}>
                   <summary>Network logs</summary>
                   <pre style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}>
-                    {evidencePackage.network_logs
+                    {(evidencePackage.network_logs ?? [])
                       .map((entry) =>
                         entry.event === 'http_error'
                           ? `HTTP ${entry.status} ${entry.url}`
@@ -1383,7 +1374,7 @@ export default function Results() {
                 </details>
               )}
 
-              {evidencePackage.dom_snapshot && (
+              {evidencePackage.dom_snapshot != null && (
                 <details className="results-step-details" style={{ marginTop: '0.75rem' }}>
                   <summary>DOM snapshot</summary>
                   <pre style={{ fontSize: '12px', whiteSpace: 'pre-wrap', maxHeight: '240px', overflow: 'auto' }}>
@@ -1392,9 +1383,9 @@ export default function Results() {
                 </details>
               )}
 
-              {evidencePackage.failure_evidence?.length > 0 && (
+              {(evidencePackage.failure_evidence?.length ?? 0) > 0 && (
                 <details className="results-step-details" style={{ marginTop: '0.75rem' }}>
-                  <summary>Failure evidence ({evidencePackage.failure_evidence.length})</summary>
+                  <summary>Failure evidence ({evidencePackage.failure_evidence?.length ?? 0})</summary>
                   <pre style={{ fontSize: '12px', whiteSpace: 'pre-wrap', maxHeight: '240px', overflow: 'auto' }}>
                     {JSON.stringify(evidencePackage.failure_evidence, null, 2)}
                   </pre>
@@ -1482,22 +1473,22 @@ export default function Results() {
                 </div>
               </div>
 
-              {diagnosisReport.next_steps?.length > 0 && (
+              {(diagnosisReport.next_steps?.length ?? 0) > 0 && (
                 <div style={{ marginTop: '1rem' }}>
                   <p className="results-field-label">Next steps</p>
                   <ul className="results-diagnosis-list">
-                    {diagnosisReport.next_steps.map((step) => (
+                    {(diagnosisReport.next_steps ?? []).map((step) => (
                       <li key={step}>{step}</li>
                     ))}
                   </ul>
                 </div>
               )}
 
-              {diagnosisReport.supporting_evidence?.length > 0 && (
+              {(diagnosisReport.supporting_evidence?.length ?? 0) > 0 && (
                 <details className="results-step-details" style={{ marginTop: '1rem' }}>
-                  <summary>Supporting evidence ({diagnosisReport.supporting_evidence.length})</summary>
+                  <summary>Supporting evidence ({diagnosisReport.supporting_evidence?.length ?? 0})</summary>
                   <ul className="results-diagnosis-list" style={{ marginTop: '0.5rem' }}>
-                    {diagnosisReport.supporting_evidence.map((item) => (
+                    {(diagnosisReport.supporting_evidence ?? []).map((item) => (
                       <li key={`${item.source}-${item.description}`}>
                         <strong>{item.source}:</strong> {item.description}
                       </li>
@@ -1506,11 +1497,11 @@ export default function Results() {
                 </details>
               )}
 
-              {diagnosisReport.alternative_hypotheses?.length > 0 && (
+              {(diagnosisReport.alternative_hypotheses?.length ?? 0) > 0 && (
                 <details className="results-step-details" style={{ marginTop: '0.75rem' }}>
                   <summary>Alternative hypotheses</summary>
                   <ul className="results-diagnosis-list" style={{ marginTop: '0.5rem' }}>
-                    {diagnosisReport.alternative_hypotheses.map((hypothesis) => (
+                    {(diagnosisReport.alternative_hypotheses ?? []).map((hypothesis) => (
                       <li key={hypothesis}>{hypothesis}</li>
                     ))}
                   </ul>
@@ -1751,6 +1742,37 @@ export default function Results() {
             </section>
           )}
 
+          {(result.execution_intelligence?.replanning_summary?.details?.length ?? 0) > 0 && (
+            <section className="results-section">
+              <SectionHeader
+                title="Execution intelligence"
+                subtitle="Adaptive runtime decisions during execution"
+              />
+              <div className="results-timeline-list">
+                {(result.execution_intelligence?.replanning_summary?.details ?? []).map((item, idx) => (
+                  <div key={`replan-${idx}`} className="results-timeline-row results-timeline-row--skipped">
+                    <span className="results-timeline-icon results-timeline-icon--skipped">↻</span>
+                    <div>
+                      <p className="results-timeline-name">
+                        Step {item.step || idx + 1} — REPLAN
+                      </p>
+                      <p className="results-timeline-sub">
+                        Original: {displayFieldValue(item.original)} → Replacement:{' '}
+                        {displayFieldValue(item.replacement)}
+                      </p>
+                      <p className="results-timeline-sub">{displayFieldValue(item.reason)}</p>
+                      {item.confidence != null && (
+                        <p className="results-timeline-sub">
+                          Confidence: {Math.round(item.confidence * 100)}%
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {executionStats && (
             <section className="results-section">
               <SectionHeader
@@ -1758,16 +1780,18 @@ export default function Results() {
                 subtitle="Runtime activity captured during the test"
               />
               <div className="results-stat-grid results-stat-grid--2x4">
-                {[
-                  ['Actions executed', executionStats.actionsExecuted, true],
-                  ['Assertions', executionStats.assertions, true],
-                  ['Navigation events', executionStats.navigationEvents, true],
-                  ['Wait time', formatDuration(executionStats.waitTimeMs), false],
-                  ['Context refreshes', executionStats.contextRefreshes, false],
-                  ['Pages visited', executionStats.pagesVisited, true],
-                  ['Self-healing count', executionStats.selfHealingCount, false],
-                  ['Retries', executionStats.retries, false],
-                ].map(([label, value, highlight]) => (
+                {(
+                  [
+                    ['Actions executed', executionStats.actionsExecuted, true],
+                    ['Assertions', executionStats.assertions, true],
+                    ['Navigation events', executionStats.navigationEvents, true],
+                    ['Wait time', formatDuration(executionStats.waitTimeMs), false],
+                    ['Context refreshes', executionStats.contextRefreshes, false],
+                    ['Pages visited', executionStats.pagesVisited, true],
+                    ['Self-healing count', executionStats.selfHealingCount, false],
+                    ['Retries', executionStats.retries, false],
+                  ] as Array<[string, ReactNode, boolean]>
+                ).map(([label, value, highlight]) => (
                   <div key={label} className="results-metric-card">
                     <p className="results-metric-card__label">{label}</p>
                     <p className={statNumberClass(value, highlight)}>{value}</p>
@@ -1861,7 +1885,7 @@ export default function Results() {
   )
 }
 
-function CollapsibleReasoning({ meta, strategyReasoning }) {
+function CollapsibleReasoning({ meta, strategyReasoning }: CollapsibleReasoningProps) {
   const [open, setOpen] = useState(false)
 
   return (

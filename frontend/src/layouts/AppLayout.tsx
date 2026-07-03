@@ -1,12 +1,14 @@
 import { Outlet } from 'react-router-dom'
 import Sidebar from '../components/Sidebar'
 import Topbar from '../components/Topbar'
+import type { NavItem } from '../types'
 
-const navItems = [
+const navItems: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/run-test', label: 'Run Test' },
   { to: '/results', label: 'Results' },
 ]
+
 export default function AppLayout() {
   return (
     <div className="flex min-h-screen bg-background">
