@@ -92,6 +92,11 @@ class PlannerMetadata(BaseModel):
     analysis_confidence: float | None = None
     analysis_reasoning: str | None = None
     testing_strategy: str | None = None
+    confidence_breakdown: dict | None = None
+    coverage_report: dict | None = None
+    execution_priority: list[str] = Field(default_factory=list)
+    strategy_reasoning: str | None = None
+    estimated_coverage_percent: float | None = None
 
 
 class ExecutionSummary(BaseModel):
@@ -120,3 +125,5 @@ class RunTestResponse(BaseModel):
     viewport: str | None = None
     browser: str | None = None
     screenshot_captured_at: str | None = None
+    evidence_package: dict | None = None
+    diagnosis_report: dict | None = None

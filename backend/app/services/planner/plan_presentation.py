@@ -260,6 +260,8 @@ def build_website_analysis(context: WebsiteContext, *, context_extracted: bool |
         "hero_sections": hero_sections or (1 if index.has_hero() else 0),
         "context_version": "2.1",
         "page_title": context.get("metadata", {}).get("title", ""),
+        "extraction_error": context.get("metadata", {}).get("extraction_error"),
+        "target_url": context.get("metadata", {}).get("current_url"),
     }
 
 
@@ -281,5 +283,7 @@ def planner_source_display(source: str) -> str:
 
 def is_minimal_fallback_plan(plan: list[dict]) -> bool:
     if len(plan) > 6:
+        return False
+    if any(step.get("action") == "click" for step in plan):
         return False
     return any(step.get("action") == "wait" and step.get("ms") == 800 for step in plan)

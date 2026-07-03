@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { runTest } from '../api/client'
+import { saveLastRunResult } from '../api/resultStorage'
 
 export default function RunTest() {
   const navigate = useNavigate()
@@ -25,13 +26,9 @@ export default function RunTest() {
 
     try {
       const data = await runTest(trimmedUrl, trimmedGoal)
-      navigate('/results', {
-        state: {
-          result: data,
-          url: trimmedUrl,
-          goal: trimmedGoal,
-        },
-      })
+      const payload = { result: data, url: trimmedUrl, goal: trimmedGoal }
+      saveLastRunResult(payload)
+      navigate('/results', { state: payload })
     } catch (err) {
       setError(err.message || 'Something went wrong')
     } finally {

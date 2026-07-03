@@ -7,6 +7,8 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
+from typing import Any
+
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -16,11 +18,13 @@ from app.services.ai_planner import generate_test_plan
 from app.services.assertions import AssertionContext, AssertionEngine
 from app.services.self_healing import heal_locator
 from app.services.playwright_bootstrap import ensure_playwright_browsers, launch_chromium
-from app.services.semantic_targets import SEMANTIC_TARGET_SELECTORS
+from app.services.semantic_targets import NAVIGATION_LANDMARK_SELECTOR_CHAIN, SEMANTIC_TARGET_SELECTORS
 from app.services.wait_strategy import wait_before_action
 from app.services.test_analyzer import TestAnalyzer
+from app.services.evidence.snapshot import ExecutionEvidenceBuffer
 
 STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "storage" / "screenshots"
+EVIDENCE_DIR = Path(__file__).resolve().parent.parent.parent / "storage" / "evidence"
 TIMEOUT_MS = 30_000
 TARGET_TIMEOUT_MS = 5_000
 VIEWPORT = {"width": 1280, "height": 720}
@@ -76,7 +80,45 @@ def _resolve_selector(target: str) -> str:
     return selector
 
 
+def _is_misleading_navigation_selector(selector: str | None) -> bool:
+    if not selector:
+        return False
+    lowered = str(selector).lower()
+    return (
+        "has-text" in lowered
+        and ("navigation" in lowered or "nav bar" in lowered or lowered.endswith('"nav")'))
+    ) or (lowered.startswith("button") and "navigation" in lowered)
+
+
+def _locator_for_navigation_verify(page: Page, action: dict) -> tuple[Any, str]:
+    selectors: list[str] = []
+    step_selector = action.get("selector")
+    if step_selector and not _is_misleading_navigation_selector(str(step_selector)):
+        selectors.append(str(step_selector))
+    selectors.extend(NAVIGATION_LANDMARK_SELECTOR_CHAIN.split(", "))
+    seen: set[str] = set()
+    for selector in selectors:
+        normalized = selector.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        locator = page.locator(normalized).first
+        try:
+            if locator.count() > 0:
+                locator.wait_for(state="attached", timeout=500)
+                return locator, normalized
+        except PlaywrightTimeoutError:
+            continue
+    raise TargetNotFoundError(
+        action.get("target", "navigation"),
+        step_selector or NAVIGATION_LANDMARK_SELECTOR_CHAIN,
+        action.get("label"),
+    )
+
+
 def _locator(page: Page, action: dict):
+    if action.get("action") == "verify_visible" and action.get("target") == "navigation":
+        return _locator_for_navigation_verify(page, action)
     if action.get("selector"):
         selector = str(action["selector"])
         locator = page.locator(selector).first
@@ -206,6 +248,7 @@ def _execute_sync(
     ai_plan_source: str,
     context_summary: dict | None = None,
 ) -> dict:
+    ensure_playwright_browsers()
     run_id = str(uuid.uuid4())
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -226,6 +269,32 @@ def _execute_sync(
     js_errors: list[str] = []
     abort_execution = False
     screenshot_captured_at: str | None = None
+    evidence_buffer = ExecutionEvidenceBuffer(
+        run_id,
+        browser=BROWSER_LABEL,
+        viewport=f"{VIEWPORT['width']}×{VIEWPORT['height']}",
+        storage_dir=EVIDENCE_DIR,
+    )
+
+    def _record_failure_evidence(
+        step_id: str,
+        step_label: str,
+        action: dict,
+        failure_type: str,
+        exception: str,
+    ) -> None:
+        if not page:
+            return
+        evidence_buffer.capture_failure(
+            page,
+            step_number=int(step_id),
+            step_name=step_label,
+            action=action,
+            failure_type=failure_type,
+            exception=exception,
+            previous_steps=list(analyzer.steps),
+            elapsed_time_ms=int((time.perf_counter() - start) * 1000),
+        )
 
     try:
         ensure_playwright_browsers()
@@ -235,6 +304,7 @@ def _execute_sync(
                 browser = launch_chromium(playwright)
                 page = browser.new_page(viewport=VIEWPORT)
                 page.on("pageerror", lambda error: js_errors.append(str(error)))
+                evidence_buffer.attach(page)
 
                 for index, action in enumerate(plan, start=1):
                     if abort_execution:
@@ -263,6 +333,7 @@ def _execute_sync(
                             "medium",
                             **_failure_metadata(action, exc, context_summary),
                         )
+                        _record_failure_evidence(step_id, step_label, action, "element_not_found", str(exc))
                     except PlaywrightTimeoutError:
                         action_failed = True
                         if action["action"] == "open_page":
@@ -272,6 +343,9 @@ def _execute_sync(
                                 f"Timed out while executing '{step_label}'.",
                                 "high",
                             )
+                            _record_failure_evidence(
+                                step_id, step_label, action, "timeout", f"Timed out while executing '{step_label}'."
+                            )
                             analyzer.skip_remaining_steps()
                             abort_execution = True
                         else:
@@ -280,6 +354,9 @@ def _execute_sync(
                                 "timeout",
                                 f"Timed out while executing '{step_label}'.",
                                 "medium",
+                            )
+                            _record_failure_evidence(
+                                step_id, step_label, action, "timeout", f"Timed out while executing '{step_label}'."
                             )
                     except PlaywrightError as exc:
                         action_failed = True
@@ -291,6 +368,9 @@ def _execute_sync(
                                 f"Could not complete '{step_label}': {message}",
                                 "high",
                             )
+                            _record_failure_evidence(
+                                step_id, step_label, action, "navigation_error", message
+                            )
                             analyzer.skip_remaining_steps()
                             abort_execution = True
                         else:
@@ -299,6 +379,9 @@ def _execute_sync(
                                 f"Action '{step_label}' failed: {message}",
                                 "medium",
                             )
+                            _record_failure_evidence(
+                                step_id, step_label, action, "javascript_error", message
+                            )
                     except Exception as exc:
                         action_failed = True
                         analyzer.complete_step("failed")
@@ -306,6 +389,9 @@ def _execute_sync(
                             "javascript_error",
                             f"Action '{step_label}' failed: {exc}",
                             "medium",
+                        )
+                        _record_failure_evidence(
+                            step_id, step_label, action, "javascript_error", str(exc)
                         )
 
                     if not action_failed:
@@ -333,6 +419,13 @@ def _execute_sync(
                                     selector=action.get("selector"),
                                     available_context=context_summary,
                                 )
+                            _record_failure_evidence(
+                                step_id,
+                                step_label,
+                                action,
+                                "assertion_failure",
+                                "; ".join(assertion_engine.failure_reasons(assertion_results)),
+                            )
 
                 if page and not abort_execution:
                     try:
@@ -372,6 +465,13 @@ def _execute_sync(
                                         "medium",
                                         available_context=context_summary,
                                     )
+                                    _record_failure_evidence(
+                                        capture_step_id,
+                                        step_names[capture_index],
+                                        plan[capture_index],
+                                        "assertion_failure",
+                                        reason,
+                                    )
                             break
 
                 for js_error in js_errors:
@@ -395,7 +495,7 @@ def _execute_sync(
         )
         analyzer.skip_remaining_steps()
 
-    return analyzer.build_result(
+    result = analyzer.build_result(
         run_id=run_id,
         goal=goal,
         title=title,
@@ -409,6 +509,8 @@ def _execute_sync(
         browser=BROWSER_LABEL,
         screenshot_captured_at=screenshot_captured_at,
     )
+    result["_execution_evidence"] = evidence_buffer.export()
+    return result
 
 
 async def run_test(url: str, goal: str) -> dict:
@@ -426,6 +528,10 @@ async def run_test(url: str, goal: str) -> dict:
     except Exception as exc:
         logger.warning("[Runner] Website context extraction failed: %s", exc)
         website_context = empty_context()
+        website_context["metadata"] = {
+            "current_url": url,
+            "extraction_error": str(exc),
+        }
 
     from app.services.website_analysis import analyze_website
 
@@ -460,6 +566,8 @@ async def run_test(url: str, goal: str) -> dict:
         result["ai_plan_metadata"] = plan_data["metadata"]
     if plan_data.get("website_analysis"):
         result["_website_analysis"] = plan_data["website_analysis"]
+    if plan_data.get("testing_strategy"):
+        result["_testing_strategy"] = plan_data["testing_strategy"]
     result["_website_context"] = website_context
     result["_source_url"] = url
     return result

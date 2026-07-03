@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { API_BASE } from '../api/config'
+import { loadLastRunResult } from '../api/resultStorage'
 import './Results.css'
 
 function formatDuration(ms) {
@@ -120,16 +121,70 @@ function getConfidencePresentation(value) {
   return { label: 'Very low confidence', badgeClass: 'results-badge--confidence-very-low', barColor: '#A32D2D' }
 }
 
+function getConfidencePresentationFromLabel(label, value) {
+  const normalized = String(label || '').toLowerCase()
+  if (normalized.includes('high')) {
+    return { label, badgeClass: 'results-badge--confidence-high', barColor: '#639922' }
+  }
+  if (normalized.includes('medium')) {
+    return { label, badgeClass: 'results-badge--confidence-good', barColor: '#185FA5' }
+  }
+  if (normalized.includes('low')) {
+    return { label, badgeClass: 'results-badge--confidence-low', barColor: '#BA7517' }
+  }
+  return getConfidencePresentation(value)
+}
+
+function sanitizeJourneyLabel(label) {
+  if (!label || typeof label !== 'string') return 'Interaction'
+  let cleaned = label.trim()
+  if (/show\s*\/?\s*hide\s+shortcuts?/i.test(cleaned)) return 'Interaction'
+  if (/\b(shift|ctrl|control|alt|cmd|command|meta)\s*\+/i.test(cleaned)) return 'Interaction'
+  cleaned = cleaned.replace(/show\s*\/?\s*hide\s+shortcuts?\s*[\w\s+]+/gi, '').trim()
+  cleaned = cleaned.replace(/\b(shift|ctrl|control|alt|cmd)\s*\+\s*[\w\s+]+/gi, '').trim()
+  if (!cleaned || cleaned.length < 2) return 'Interaction'
+  return cleaned
+}
+
+function truncateReasoning(text, maxSentences = 3) {
+  if (!text) return text
+  const sentences = String(text)
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+  if (sentences.length <= maxSentences) {
+    return sentences.join(' ')
+  }
+  return `${sentences.slice(0, maxSentences).join(' ')}`
+}
+
+function uniqueStrategyReasoning(strategyText, reasoningText) {
+  if (!reasoningText) return null
+  if (!strategyText) return reasoningText
+  const normalize = (value) => String(value).toLowerCase().replace(/\s+/g, ' ').trim()
+  if (normalize(strategyText) === normalize(reasoningText)) return null
+  const strategySentences = strategyText
+    .split(/[.!?]+/)
+    .map((sentence) => normalize(sentence))
+    .filter(Boolean)
+  const uniqueSentences = reasoningText
+    .split(/[.!?]+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence && !strategySentences.includes(normalize(sentence)))
+  if (!uniqueSentences.length) return null
+  return `${uniqueSentences.join('. ')}.`
+}
+
 function buildJourneyFlow(meta, plan) {
   if (meta?.generated_journey?.length) {
-    return meta.generated_journey
+    return meta.generated_journey.map(sanitizeJourneyLabel)
   }
   const flow = ['Homepage']
   for (const step of plan || []) {
     if (step.action !== 'click') continue
     const match = step.label?.match(/"([^"]+)"/)
     if (match) {
-      flow.push(match[1])
+      flow.push(sanitizeJourneyLabel(match[1]))
     } else if (step.href) {
       flow.push(contextPageName(step.href) || 'Page')
     }
@@ -205,6 +260,92 @@ function formatHttpStatus(status) {
     <span className="results-http-status">
       {dotClass && <span className={`results-http-dot ${dotClass}`} />}
       {status}
+    </span>
+  )
+}
+
+function getRunDisplayStatus(result) {
+  if (!result) {
+    return { label: 'Unknown', variant: 'unknown' }
+  }
+  if (isFailedLaunch(result.status, result.http_status)) {
+    return { label: 'Error', variant: 'error' }
+  }
+
+  const passed = result.summary?.passed_steps ?? 0
+  const failed = result.summary?.failed_steps ?? 0
+  const skipped = (result.steps || []).filter((step) => step.status === 'skipped').length
+
+  if (failed === 0 && passed > 0) {
+    return { label: 'Pass', variant: 'pass' }
+  }
+  if (failed > 0 && passed > 0) {
+    return { label: 'Completed with Issues', variant: 'issues' }
+  }
+  if (failed > 0 && passed === 0) {
+    return { label: skipped > 0 ? 'Failed' : 'Failed', variant: 'failed' }
+  }
+  return { label: 'Unknown', variant: 'unknown' }
+}
+
+function formatExecutionStatusBadge(displayStatus) {
+  if (!displayStatus?.label) {
+    return <MissingValue kind="detected" />
+  }
+
+  const stylesByVariant = {
+    pass: {
+      background: '#EAF3DE',
+      color: '#27500A',
+      border: '0.5px solid #C0DD97',
+      icon: 'check',
+    },
+    issues: {
+      background: '#FAEEDA',
+      color: '#854F0B',
+      border: '0.5px solid #FAC775',
+      icon: 'alert-triangle',
+    },
+    failed: {
+      background: '#FCEBEB',
+      color: '#791F1F',
+      border: '0.5px solid #F7C1C1',
+      icon: 'x',
+    },
+    error: {
+      background: '#FCEBEB',
+      color: '#791F1F',
+      border: '0.5px solid #F7C1C1',
+      icon: 'x',
+    },
+    unknown: {
+      background: 'var(--surface-1)',
+      color: 'var(--text-secondary)',
+      border: '0.5px solid var(--border)',
+      icon: null,
+    },
+  }
+
+  const variant = displayStatus.variant || 'unknown'
+  const style = stylesByVariant[variant] || stylesByVariant.unknown
+
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '5px',
+        fontSize: '12px',
+        fontWeight: 500,
+        padding: '3px 10px',
+        borderRadius: '6px',
+        background: style.background,
+        color: style.color,
+        border: style.border,
+      }}
+    >
+      {style.icon && <Icon name={style.icon} size={11} aria-hidden="true" />}
+      {displayStatus.label}
     </span>
   )
 }
@@ -363,6 +504,12 @@ function isWebsiteIntelEmpty(analysis) {
   )
 }
 
+function formatCoverageStatus(status) {
+  if (status === 'tested') return { label: 'Tested', className: 'results-badge--pass' }
+  if (status === 'not_tested') return { label: 'Not tested', className: 'results-badge--fail' }
+  return { label: 'N/A', className: 'results-badge--fallback' }
+}
+
 function formatListValue(items) {
   if (!items || !items.length) {
     return <MissingValue kind="detected" />
@@ -371,7 +518,7 @@ function formatListValue(items) {
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
       {items.map((item) => (
         <span key={item} className="results-flow-chip">
-          {item}
+          {sanitizeJourneyLabel(item)}
         </span>
       ))}
     </div>
@@ -393,6 +540,7 @@ function formatReasoningValue(value) {
 
 function getSeverityBadgeClass(severity) {
   const normalized = String(severity || 'low').toLowerCase()
+  if (normalized === 'critical') return 'results-badge--severity-critical'
   if (normalized === 'high') return 'results-badge--severity-high'
   if (normalized === 'medium') return 'results-badge--severity-medium'
   return 'results-badge--severity-low'
@@ -400,6 +548,7 @@ function getSeverityBadgeClass(severity) {
 
 function getSeverityLabel(severity) {
   const normalized = String(severity || 'low').toLowerCase()
+  if (normalized === 'critical') return 'Critical'
   if (normalized === 'high') return 'High'
   if (normalized === 'medium') return 'Medium'
   return 'Low'
@@ -533,25 +682,89 @@ function SectionHeader({ title, subtitle, meta }) {
   )
 }
 
+function getFailureForStep(result, stepId) {
+  if (!result?.failures?.length) return null
+  const normalizedId = String(stepId)
+  return (
+    result.failures.find((failure) => String(failure.step_id || '') === normalizedId) ||
+    result.failures.find((_, index) => String(index + 1) === normalizedId) ||
+    null
+  )
+}
+
+function getStepExpectedAction(planStep) {
+  if (!planStep) return null
+  const action = planStep.action
+  const target = planStep.target
+  if (action === 'verify_visible' && target === 'navigation') {
+    return 'Navigation landmark exists.'
+  }
+  if (action === 'verify_visible') {
+    return `${String(target || planStep.label || 'element').replace(/_/g, ' ')} should be visible.`
+  }
+  if (action === 'verify_text') {
+    return `Text "${planStep.text || 'expected copy'}" should be visible.`
+  }
+  if (action === 'verify_form') {
+    return 'Form inputs should be visible.'
+  }
+  if (action === 'open_page') {
+    return 'Page should load successfully.'
+  }
+  if (action === 'click') {
+    return planStep.label ? `Click ${planStep.label}.` : 'Target element should be clickable.'
+  }
+  return planStep.label || null
+}
+
+function getStepActualResult(step, failure) {
+  if (failure?.user_message) {
+    const observedMatch = String(failure.user_message).match(/Observed:\s*([\s\S]*?)(?:\n\n(?:Likely Cause|Note):|$)/i)
+    if (observedMatch?.[1]) {
+      return observedMatch[1].trim()
+    }
+  }
+  if (failure?.message) {
+    return failure.message
+  }
+  if (step?.status === 'failed') {
+    return 'Step did not complete successfully.'
+  }
+  return null
+}
+
+function isStructuredFailureMessage(message) {
+  if (!message) return false
+  return /^(Assertion Failed|Expected:)/m.test(String(message))
+}
+
 function FailureCard({ failure, index, totalSteps, stepLabel, stepId }) {
   const [expanded, setExpanded] = useState(false)
   const cleanError = formatError(failure.message)
   const summary = getFailureSummary(failure)
-  const hasTechnical = Boolean(failure.selector || (failure.message && failure.user_message))
+  const structuredReport = isStructuredFailureMessage(summary)
+  const hasTechnical = Boolean(
+    failure.selector || (failure.message && failure.user_message && !structuredReport),
+  )
 
   return (
     <div className="results-failure-card">
       <div className="results-failure-card__header">
         <div className="results-failure-card__title">
           <Icon name="alert-triangle" size={16} />
-          {failure.type?.replace(/_/g, ' ') || 'Failure'}
+          {structuredReport ? 'Assertion Failed' : failure.type?.replace(/_/g, ' ') || 'Failure'}
         </div>
         <span className={`results-badge ${getSeverityBadgeClass(failure.severity)}`}>
           {getSeverityLabel(failure.severity)}
         </span>
       </div>
-      <p className="results-failure-card__summary">{summary}</p>
-      {cleanError && (
+      <p
+        className="results-failure-card__summary"
+        style={structuredReport ? { whiteSpace: 'pre-wrap', lineHeight: 1.55 } : undefined}
+      >
+        {summary}
+      </p>
+      {cleanError && !structuredReport && (
         <pre className="results-failure-card__raw">{cleanError}</pre>
       )}
       <div className="results-failure-card__footer">
@@ -588,9 +801,10 @@ function FailureCard({ failure, index, totalSteps, stepLabel, stepId }) {
 
 export default function Results() {
   const { state } = useLocation()
-  const result = state?.result
-  const sourceUrl = state?.url
-  const goal = state?.goal
+  const runState = state ?? loadLastRunResult()
+  const result = runState?.result
+  const sourceUrl = runState?.url
+  const goal = runState?.goal
   const screenshotUrl = result?.screenshot ? `${API_BASE}${result.screenshot}` : null
   const health = result?.summary?.health
   const isPass = health === 'PASS'
@@ -602,7 +816,11 @@ export default function Results() {
   const journeyFlow = result ? buildJourneyFlow(meta, result.ai_plan) : []
   const contextVersion = meta?.context_version || websiteAnalysis?.context_version
   const pagesVisited = meta?.pages_visited?.length ?? executionStats?.pagesVisited
-  const confidencePresentation = confidence ? getConfidencePresentation(confidence.value) : null
+  const confidencePresentation = confidence
+    ? meta?.planner_confidence_label
+      ? getConfidencePresentationFromLabel(confidence.label, confidence.value)
+      : getConfidencePresentation(confidence.value)
+    : null
   const timelineSteps = result?.steps || []
   const maxTimelineMs = Math.max(
     ...timelineSteps.map((step) => parseMs(formatDuration(step.duration_ms))),
@@ -638,6 +856,36 @@ export default function Results() {
           contextExtracted,
         }
       : null
+  const confidenceBreakdown = meta?.confidence_breakdown ?? websiteAnalysis?.confidence_breakdown
+  const coverageReport = meta?.coverage_report ?? websiteAnalysis?.coverage_report
+  const strategyReasoning = meta?.strategy_reasoning ?? websiteAnalysis?.strategy_reasoning
+  const estimatedCoverage =
+    meta?.estimated_coverage_percent ?? websiteAnalysis?.estimated_coverage_percent
+  const contextExtractionError = websiteAnalysis?.extraction_error
+  const allConfidenceSignalsZero =
+    confidenceBreakdown?.signals?.length > 0 &&
+    confidenceBreakdown.signals.every((signal) => (signal.contribution || 0) === 0)
+  const evidencePackage = result?.evidence_package
+  const diagnosisReport = result?.diagnosis_report
+  const showConfidenceBreakdown =
+    confidenceBreakdown?.signals?.length > 0 &&
+    contextExtracted &&
+    !allConfidenceSignalsZero
+  const uniqueStrategyReasoningText = uniqueStrategyReasoning(
+    meta?.testing_strategy ?? aiWebsiteAnalysis?.testingStrategy,
+    strategyReasoning,
+  )
+  const evidenceScreenshot = evidencePackage?.screenshot
+    ? `${API_BASE}${evidencePackage.screenshot}`
+    : screenshotUrl
+  const runDisplayStatus = result ? getRunDisplayStatus(result) : null
+  const executiveBadgeClass =
+    runDisplayStatus?.variant === 'pass'
+      ? 'results-badge--pass'
+      : runDisplayStatus?.variant === 'issues'
+        ? 'results-badge--issues'
+        : 'results-badge--fail'
+
   const showFailedLaunchNotice = isFailedLaunch(result?.status, result?.http_status)
 
   async function copyRunId() {
@@ -665,8 +913,8 @@ export default function Results() {
                 <h4 className="results-section__title">Executive summary</h4>
                 <p className="results-section__subtitle">High-level overview of this test run</p>
               </div>
-              <span className={`results-badge ${isPass ? 'results-badge--pass' : 'results-badge--fail'}`}>
-                {health || 'Unknown'}
+              <span className={`results-badge ${executiveBadgeClass}`}>
+                {runDisplayStatus?.label || health || 'Unknown'}
               </span>
             </div>
 
@@ -730,7 +978,7 @@ export default function Results() {
               </div>
               <div>
                 <p className="results-field-label">Execution status</p>
-                {formatExecutionStatus(result.status)}
+                {formatExecutionStatusBadge(runDisplayStatus)}
               </div>
               {showFailedLaunchNotice ? (
                 <div className="results-failed-launch-notice">
@@ -867,9 +1115,11 @@ export default function Results() {
                   <div className="results-intel-empty-notice">
                     <i className="ti ti-alert-triangle" aria-hidden="true" />
                     <span>
-                      {websiteAnalysis?.context_extracted === false
-                        ? 'Website structure could not be extracted — analysis and planning used fallback mode'
-                        : 'No website structure was extracted — the planner used fallback mode'}
+                      {contextExtractionError
+                        ? `Website structure could not be extracted: ${contextExtractionError}`
+                        : websiteAnalysis?.context_extracted === false
+                          ? 'Website structure could not be extracted — analysis and planning used fallback mode'
+                          : 'No website structure was extracted — the planner used fallback mode'}
                     </span>
                   </div>
                 ) : (
@@ -912,6 +1162,16 @@ export default function Results() {
                 title="AI website analysis"
                 subtitle="Semantic understanding produced before journey planning"
               />
+              {!contextExtracted && (
+                <div className="results-intel-empty-notice" style={{ marginBottom: '1rem' }}>
+                  <i className="ti ti-alert-triangle" aria-hidden="true" />
+                  <span>
+                    {contextExtractionError
+                      ? `Website context could not be extracted: ${contextExtractionError}. Re-run the test — classification fields below are unavailable until extraction succeeds.`
+                      : 'Website context was not extracted — classification fields below are unavailable. Re-run the test after confirming Playwright is ready at /system/health.'}
+                  </span>
+                </div>
+              )}
               <div className="results-fields-grid">
                 <div>
                   <p className="results-field-label">Website type</p>
@@ -944,7 +1204,9 @@ export default function Results() {
                 <div>
                   <p className="results-field-label">Testing strategy</p>
                   <p className="results-field-value">
-                    {displayFieldValue(aiWebsiteAnalysis.testingStrategy)}
+                    {displayFieldValue(
+                      truncateReasoning(aiWebsiteAnalysis.testingStrategy, 3),
+                    )}
                   </p>
                 </div>
                 <div>
@@ -959,11 +1221,301 @@ export default function Results() {
                   <div style={{ gridColumn: '1 / -1' }}>
                     <p className="results-field-label">Classification reasoning</p>
                     <p className="results-field-value" style={{ lineHeight: 1.5 }}>
-                      {aiWebsiteAnalysis.analysisReasoning}
+                      {truncateReasoning(aiWebsiteAnalysis.analysisReasoning, 3)}
                     </p>
                   </div>
                 )}
               </div>
+            </section>
+          )}
+
+          {!contextExtracted && confidenceBreakdown?.signals?.length > 0 && (
+            <section className="results-section">
+              <SectionHeader
+                title="AI confidence breakdown"
+                subtitle="Unavailable — website context was not extracted"
+              />
+              <div className="results-intel-empty-notice">
+                <i className="ti ti-alert-triangle" aria-hidden="true" />
+                <span>
+                  {contextExtractionError
+                    ? `Context extraction failed: ${contextExtractionError}. Install Chromium with: python -m playwright install chromium`
+                    : 'Context extraction did not return page structure. Re-run after confirming Playwright is ready at /system/health.'}
+                </span>
+              </div>
+            </section>
+          )}
+
+          {showConfidenceBreakdown && (
+            <section className="results-section">
+              <SectionHeader
+                title="AI confidence breakdown"
+                subtitle="Weighted signals behind website classification"
+              />
+              <div className="results-fields-grid" style={{ marginBottom: '1rem' }}>
+                <div>
+                  <p className="results-field-label">Overall confidence</p>
+                  <p className="results-field-value">
+                    {confidenceBreakdown.total_confidence != null
+                      ? `${Math.round(confidenceBreakdown.total_confidence * 100)}%`
+                      : displayFieldValue(null)}
+                  </p>
+                </div>
+              </div>
+              <div className="results-intel-grid">
+                {confidenceBreakdown.signals.map((signal) => (
+                  <div key={signal.signal} className="results-intel-tile">
+                    <p className="results-intel-tile__label">{signal.signal}</p>
+                    <p className="results-intel-tile__value results-intel-tile__value--active">
+                      {Math.round((signal.contribution || 0) * 100)}%
+                    </p>
+                    <p className="results-field-value" style={{ fontSize: '11px', marginTop: '0.35rem' }}>
+                      {signal.evidence}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {coverageReport?.areas?.length > 0 && (
+            <section className="results-section">
+              <SectionHeader
+                title="Test coverage"
+                subtitle="Estimated structural coverage for this run"
+                meta={
+                  estimatedCoverage != null
+                    ? `${Math.round(estimatedCoverage)}% estimated`
+                    : undefined
+                }
+              />
+              <div className="results-intel-grid">
+                {coverageReport.areas.map((area) => {
+                  const status = formatCoverageStatus(area.status)
+                  return (
+                    <div key={area.area} className="results-intel-tile">
+                      <p className="results-intel-tile__label">{area.area}</p>
+                      <span className={`results-badge ${status.className}`} style={{ marginTop: '0.25rem' }}>
+                        {status.label}
+                      </span>
+                      <p className="results-field-value" style={{ fontSize: '11px', marginTop: '0.35rem' }}>
+                        {area.reason}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+          )}
+
+          {evidencePackage && (
+            <section className="results-section">
+              <SectionHeader
+                title="Evidence summary"
+                subtitle="Structured evidence package for AI diagnosis"
+              />
+              <div className="results-fields-grid">
+                <div>
+                  <p className="results-field-label">Screenshot</p>
+                  <p className="results-field-value">
+                    {evidencePackage.screenshot ? 'Captured' : displayFieldValue(null, 'captured')}
+                  </p>
+                </div>
+                <div>
+                  <p className="results-field-label">Console logs</p>
+                  <p className="results-field-value">{evidencePackage.console_logs?.length ?? 0}</p>
+                </div>
+                <div>
+                  <p className="results-field-label">Network logs</p>
+                  <p className="results-field-value">{evidencePackage.network_logs?.length ?? 0}</p>
+                </div>
+                <div>
+                  <p className="results-field-label">Assertions</p>
+                  <p className="results-field-value">{evidencePackage.assertions?.length ?? 0}</p>
+                </div>
+                <div>
+                  <p className="results-field-label">Coverage</p>
+                  <p className="results-field-value">
+                    {evidencePackage.coverage_report?.estimated_coverage_percent != null
+                      ? `${Math.round(evidencePackage.coverage_report.estimated_coverage_percent)}%`
+                      : displayFieldValue(null)}
+                  </p>
+                </div>
+                <div>
+                  <p className="results-field-label">Explainability</p>
+                  <p className="results-field-value">
+                    {evidencePackage.explainability_records?.signals?.length
+                      ? `${evidencePackage.explainability_records.signals.length} signals`
+                      : displayFieldValue(null)}
+                  </p>
+                </div>
+              </div>
+
+              {evidenceScreenshot && (
+                <div className="results-screenshot-frame" style={{ marginTop: '1rem' }}>
+                  <img src={evidenceScreenshot} alt="Evidence screenshot" />
+                </div>
+              )}
+
+              {evidencePackage.console_logs?.length > 0 && (
+                <details className="results-step-details" style={{ marginTop: '1rem' }}>
+                  <summary>Console logs</summary>
+                  <pre style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}>
+                    {evidencePackage.console_logs
+                      .map((entry) => `[${entry.type}] ${entry.text}`)
+                      .join('\n')}
+                  </pre>
+                </details>
+              )}
+
+              {evidencePackage.network_logs?.length > 0 && (
+                <details className="results-step-details" style={{ marginTop: '0.75rem' }}>
+                  <summary>Network logs</summary>
+                  <pre style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}>
+                    {evidencePackage.network_logs
+                      .map((entry) =>
+                        entry.event === 'http_error'
+                          ? `HTTP ${entry.status} ${entry.url}`
+                          : `${entry.method} ${entry.url} failed: ${entry.failure}`,
+                      )
+                      .join('\n')}
+                  </pre>
+                </details>
+              )}
+
+              {evidencePackage.dom_snapshot && (
+                <details className="results-step-details" style={{ marginTop: '0.75rem' }}>
+                  <summary>DOM snapshot</summary>
+                  <pre style={{ fontSize: '12px', whiteSpace: 'pre-wrap', maxHeight: '240px', overflow: 'auto' }}>
+                    {JSON.stringify(evidencePackage.dom_snapshot, null, 2)}
+                  </pre>
+                </details>
+              )}
+
+              {evidencePackage.failure_evidence?.length > 0 && (
+                <details className="results-step-details" style={{ marginTop: '0.75rem' }}>
+                  <summary>Failure evidence ({evidencePackage.failure_evidence.length})</summary>
+                  <pre style={{ fontSize: '12px', whiteSpace: 'pre-wrap', maxHeight: '240px', overflow: 'auto' }}>
+                    {JSON.stringify(evidencePackage.failure_evidence, null, 2)}
+                  </pre>
+                </details>
+              )}
+            </section>
+          )}
+
+          {diagnosisReport && (
+            <section className="results-section results-section--diagnosis">
+              <SectionHeader
+                title="AI diagnosis"
+                subtitle="Evidence-driven root cause analysis and recommended actions"
+                meta={diagnosisReport.confidence_label}
+              />
+              <div className="results-fields-grid" style={{ marginBottom: '1rem' }}>
+                <div>
+                  <p className="results-field-label">Failure type</p>
+                  <span className="results-badge results-badge--ai">{diagnosisReport.failure_type}</span>
+                </div>
+                <div>
+                  <p className="results-field-label">Severity</p>
+                  <span className={`results-badge ${getSeverityBadgeClass(diagnosisReport.severity)}`}>
+                    {getSeverityLabel(diagnosisReport.severity)}
+                  </span>
+                </div>
+                <div>
+                  <p className="results-field-label">Confidence</p>
+                  <p className="results-field-value">
+                    {diagnosisReport.confidence != null
+                      ? `${Math.round(diagnosisReport.confidence * 100)}% (${diagnosisReport.confidence_label})`
+                      : displayFieldValue(null)}
+                  </p>
+                </div>
+                <div>
+                  <p className="results-field-label">Ownership</p>
+                  <p className="results-field-value">{displayFieldValue(diagnosisReport.ownership)}</p>
+                </div>
+                <div>
+                  <p className="results-field-label">Fix complexity</p>
+                  <p className="results-field-value">{displayFieldValue(diagnosisReport.fix_complexity)}</p>
+                </div>
+                <div>
+                  <p className="results-field-label">Estimated fix time</p>
+                  <p className="results-field-value">{displayFieldValue(diagnosisReport.estimated_fix_time)}</p>
+                </div>
+              </div>
+
+              <div className="results-fields-grid">
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <p className="results-field-label">Root cause</p>
+                  <p className="results-field-value" style={{ lineHeight: 1.5 }}>
+                    {truncateReasoning(diagnosisReport.root_cause, 5)}
+                  </p>
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <p className="results-field-label">Business impact</p>
+                  <p className="results-field-value" style={{ lineHeight: 1.5 }}>
+                    {diagnosisReport.business_impact}
+                  </p>
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <p className="results-field-label">Reasoning</p>
+                  <p className="results-field-value" style={{ lineHeight: 1.5 }}>
+                    {truncateReasoning(diagnosisReport.reasoning, 5)}
+                  </p>
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <p className="results-field-label">Recommendation</p>
+                  <p className="results-field-value" style={{ lineHeight: 1.5 }}>
+                    {truncateReasoning(diagnosisReport.recommendation, 5)}
+                  </p>
+                </div>
+                <div>
+                  <p className="results-field-label">Developer action</p>
+                  <p className="results-field-value" style={{ lineHeight: 1.5 }}>
+                    {diagnosisReport.developer_action}
+                  </p>
+                </div>
+                <div>
+                  <p className="results-field-label">QA action</p>
+                  <p className="results-field-value" style={{ lineHeight: 1.5 }}>
+                    {diagnosisReport.qa_action}
+                  </p>
+                </div>
+              </div>
+
+              {diagnosisReport.next_steps?.length > 0 && (
+                <div style={{ marginTop: '1rem' }}>
+                  <p className="results-field-label">Next steps</p>
+                  <ul className="results-diagnosis-list">
+                    {diagnosisReport.next_steps.map((step) => (
+                      <li key={step}>{step}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {diagnosisReport.supporting_evidence?.length > 0 && (
+                <details className="results-step-details" style={{ marginTop: '1rem' }}>
+                  <summary>Supporting evidence ({diagnosisReport.supporting_evidence.length})</summary>
+                  <ul className="results-diagnosis-list" style={{ marginTop: '0.5rem' }}>
+                    {diagnosisReport.supporting_evidence.map((item) => (
+                      <li key={`${item.source}-${item.description}`}>
+                        <strong>{item.source}:</strong> {item.description}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              {diagnosisReport.alternative_hypotheses?.length > 0 && (
+                <details className="results-step-details" style={{ marginTop: '0.75rem' }}>
+                  <summary>Alternative hypotheses</summary>
+                  <ul className="results-diagnosis-list" style={{ marginTop: '0.5rem' }}>
+                    {diagnosisReport.alternative_hypotheses.map((hypothesis) => (
+                      <li key={hypothesis}>{hypothesis}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </section>
           )}
 
@@ -1051,8 +1603,16 @@ export default function Results() {
             <div className="results-timeline-list">
               {timelineSteps.map((step, index) => {
                 const planStep = result.ai_plan?.[index]
+                const stepFailure = getFailureForStep(result, step.id)
                 const status = step.status || 'skipped'
                 const durationStr = formatDuration(step.duration_ms) ?? ''
+                const expectedAction = status === 'failed' ? getStepExpectedAction(planStep) : null
+                const generatedSelector =
+                  status === 'failed'
+                    ? stepFailure?.selector || planStep?.selector || null
+                    : null
+                const actualResult =
+                  status === 'failed' ? getStepActualResult(step, stepFailure) : null
                 let pct = Math.max((parseMs(durationStr) / maxTimelineMs) * 100, 2)
                 let barColor = '#639922'
                 if (status === 'failed') {
@@ -1088,6 +1648,32 @@ export default function Results() {
                       <p className="results-timeline-sub">
                         {getTimelineSubline(planStep, step)}
                       </p>
+                      {status === 'failed' && (
+                        <div className="results-timeline-failure-detail">
+                          {expectedAction && (
+                            <p>
+                              <span className="results-field-label">Expected:</span> {expectedAction}
+                            </p>
+                          )}
+                          {generatedSelector && (
+                            <p>
+                              <span className="results-field-label">Generated Selector:</span>{' '}
+                              <code style={{ fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                                {generatedSelector}
+                              </code>
+                            </p>
+                          )}
+                          {actualResult && (
+                            <p>
+                              <span className="results-field-label">Result:</span> {actualResult}
+                            </p>
+                          )}
+                          <p>
+                            <span className="results-field-label">Duration:</span>{' '}
+                            {formatDuration(step.duration_ms) ?? displayFieldValue(null, 'captured')}
+                          </p>
+                        </div>
+                      )}
                     </div>
                     <span
                       className={`results-timeline-status${
@@ -1153,9 +1739,13 @@ export default function Results() {
                 })
               ) : (
                 <div className="results-failure-empty">
-                  <Icon name="circle-check" size={32} className="" style={{ color: '#639922' }} />
-                  <p className="results-failure-empty__title">All steps passed</p>
-                  <p className="results-failure-empty__subtitle">No failures detected in this run</p>
+                  <Icon name="alert-triangle" size={32} className="" style={{ color: '#BA7517' }} />
+                  <p className="results-failure-empty__title">
+                    This run failed, but no structured failure records were captured.
+                  </p>
+                  <p className="results-failure-empty__subtitle">
+                    Review the Execution Timeline and server logs for additional details.
+                  </p>
                 </div>
               )}
             </section>
@@ -1244,7 +1834,10 @@ export default function Results() {
           </section>
 
           {meta && (
-            <CollapsibleReasoning meta={meta} />
+            <CollapsibleReasoning
+              meta={meta}
+              strategyReasoning={uniqueStrategyReasoningText}
+            />
           )}
         </>
       ) : (
@@ -1268,7 +1861,7 @@ export default function Results() {
   )
 }
 
-function CollapsibleReasoning({ meta }) {
+function CollapsibleReasoning({ meta, strategyReasoning }) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -1303,11 +1896,11 @@ function CollapsibleReasoning({ meta }) {
                 {formatReasoningValue(meta.primary_navigation)}
               </p>
             </div>
-            {meta.analysis_reasoning && (
+            {strategyReasoning && (
               <div style={{ gridColumn: '1 / -1' }}>
-                <p className="results-field-label">Website classification reasoning</p>
+                <p className="results-field-label">Strategy reasoning</p>
                 <p className="results-field-value" style={{ lineHeight: 1.5 }}>
-                  {meta.analysis_reasoning}
+                  {truncateReasoning(strategyReasoning, 3)}
                 </p>
               </div>
             )}

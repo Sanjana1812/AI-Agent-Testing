@@ -91,6 +91,12 @@
   border: 0.5px solid #f7c1c1;
 }
 
+.results-badge--issues {
+  background: #faeeda;
+  color: #854f0b;
+  border: 0.5px solid #fac775;
+}
+
 .results-badge--ai {
   background: #eeedfe;
   color: #3c3489;
@@ -131,6 +137,13 @@
   background: #fcebeb;
   color: #791f1f;
   border: 0.5px solid #f7c1c1;
+}
+
+.results-badge--severity-critical {
+  background: #3d0a0a;
+  color: #ffffff;
+  border: 0.5px solid #791f1f;
+  font-weight: 600;
 }
 
 .results-badge--severity-medium {
@@ -484,6 +497,18 @@
   font-size: 12px;
 }
 
+.results-diagnosis-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.results-diagnosis-list li + li {
+  margin-top: 0.35rem;
+}
+
 .results-timeline-list {
   display: flex;
   flex-direction: column;
@@ -550,6 +575,17 @@
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 2px;
+}
+
+.results-timeline-failure-detail {
+  margin-top: 0.5rem;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #791f1f;
+}
+
+.results-timeline-failure-detail p {
+  margin: 0.15rem 0 0;
 }
 
 .results-timeline-row--skipped .results-timeline-name {

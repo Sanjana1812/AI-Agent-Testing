@@ -20,6 +20,15 @@ from app.services.planner.selector_validator import is_generic_selector, pick_va
 logger = logging.getLogger(__name__)
 
 GENERIC_LITERALS = frozenset({"button", "a", "div", "section", "input", "form", "footer"})
+GENERIC_LABEL_TEXTS = frozenset(
+    {"navigation", "navigation bar", "nav", "menu", "nav bar", "navbar", "main menu"}
+)
+NAVIGATION_LANDMARK_SELECTORS = (
+    "[role='navigation']",
+    "nav",
+    "header nav",
+    "header:has(nav)",
+)
 
 NON_ELEMENT_ACTIONS = frozenset({"open_page", "wait", "capture"})
 INTERACTIVE_ACTIONS = frozenset({"click", "fill", "verify_visible", "verify_form", "scroll"})
@@ -37,6 +46,17 @@ def build_candidates(element: dict[str, Any]) -> list[RankedSelector]:
     """Build ranked selector candidates from a context element record."""
     candidates: list[RankedSelector] = []
     tag = str(element.get("tag") or element.get("element_tag") or "").lower()
+    is_nav_landmark = tag == "nav" or element.get("semantic_landmark") or element.get("role") == "navigation"
+
+    if is_nav_landmark:
+        for nav_selector in NAVIGATION_LANDMARK_SELECTORS:
+            candidates.append(
+                RankedSelector(
+                    selector=nav_selector,
+                    selector_type=SelectorType.ROLE if "role" in nav_selector else SelectorType.TAG,
+                    confidence=max(CONFIDENCE_BY_TYPE[SelectorType.ROLE], CONFIDENCE_BY_TYPE[SelectorType.TAG]),
+                )
+            )
 
     data_testid = element.get("data-testid") or element.get("data_testid")
     if data_testid:
@@ -82,19 +102,37 @@ def build_candidates(element: dict[str, Any]) -> list[RankedSelector]:
     text = element.get("text")
     if text and str(text).strip():
         text_value = str(text).strip()
-        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        normalized_text = re.sub(r"\s+", " ", text_value.strip().lower())
+        if is_nav_landmark or normalized_text in GENERIC_LABEL_TEXTS:
+            pass
+        elif tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             prefix = tag
+            candidates.append(
+                RankedSelector(
+                    selector=f'{prefix}:has-text("{_escape_text(text_value)}")',
+                    selector_type=SelectorType.TEXT,
+                    confidence=CONFIDENCE_BY_TYPE[SelectorType.TEXT],
+                )
+            )
         elif tag in {"a", "button", "input"}:
             prefix = tag
-        else:
-            prefix = "button"
-        candidates.append(
-            RankedSelector(
-                selector=f'{prefix}:has-text("{_escape_text(text_value)}")',
-                selector_type=SelectorType.TEXT,
-                confidence=CONFIDENCE_BY_TYPE[SelectorType.TEXT],
+            candidates.append(
+                RankedSelector(
+                    selector=f'{prefix}:has-text("{_escape_text(text_value)}")',
+                    selector_type=SelectorType.TEXT,
+                    confidence=CONFIDENCE_BY_TYPE[SelectorType.TEXT],
+                )
             )
-        )
+        elif tag == "nav":
+            pass
+        else:
+            candidates.append(
+                RankedSelector(
+                    selector=f'*:has-text("{_escape_text(text_value)}")',
+                    selector_type=SelectorType.TEXT,
+                    confidence=CONFIDENCE_BY_TYPE[SelectorType.TEXT] - 10,
+                )
+            )
 
     name = element.get("name")
     if name:
@@ -300,18 +338,32 @@ def _find_form_field(index: ContextIndex, field_kind: str) -> dict | None:
 
 
 def _find_navigation(index: ContextIndex) -> dict | None:
-    nav_links = index.ranked_nav_links(exclude_logo=False)
-    if nav_links:
-        link = nav_links[0]
-        selector = link.get("selector")
-        if selector and not is_generic_selector(selector):
-            parent_match = re.match(r"^(nav[^ ]*)", selector)
-            if parent_match:
-                return {"selector": parent_match.group(1), "tag": "nav"}
-        return {"selector": "nav", "tag": "nav", "text": "Navigation"}
+    if index.has_navigation() or index.context.get("navigation"):
+        nav_links = index.ranked_nav_links(exclude_logo=False)
+        if nav_links:
+            link = nav_links[0]
+            selector = link.get("selector")
+            if selector and not is_generic_selector(selector):
+                parent_match = re.match(r"^(nav[^ ]*)", selector)
+                if parent_match:
+                    return {
+                        "selector": parent_match.group(1),
+                        "tag": "nav",
+                        "role": "navigation",
+                        "semantic_landmark": True,
+                    }
+        return {
+            "selector": "[role='navigation'], nav, header nav",
+            "tag": "nav",
+            "role": "navigation",
+            "semantic_landmark": True,
+        }
     for section in index.ranked_sections():
         if section.get("tag") == "header" or section.get("role") == "banner":
-            return _section_record(section)
+            record = _section_record(section)
+            record["semantic_landmark"] = True
+            record.setdefault("selector", "header")
+            return record
     return None
 
 

@@ -54,6 +54,8 @@ def _candidate_selectors(action: dict) -> list[str]:
 
 
 def _text_healing_locator(page: Page, action: dict) -> Locator | None:
+    if action.get("target") == "navigation":
+        return None
     label = _label_text(action)
     if not label:
         return None

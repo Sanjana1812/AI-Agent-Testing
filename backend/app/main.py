@@ -1,4 +1,6 @@
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,12 +10,12 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import init_db
 from app.routers import run, system
-from app.services.playwright_bootstrap import ensure_playwright_browsers
 
 logging.basicConfig(level=logging.INFO)
 
 STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage"
 STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+(STORAGE_PATH / "evidence").mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="AI Testing Platform API", version="0.1.0")
 app.add_middleware(
@@ -28,10 +30,28 @@ app.include_router(run.router)
 app.include_router(system.router)
 
 
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _warm_playwright_browsers() -> None:
+    """Install/check Chromium in a child process so startup is not blocked."""
+    subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from app.services.playwright_bootstrap import ensure_playwright_browsers; "
+            "ensure_playwright_browsers()",
+        ],
+        cwd=str(_BACKEND_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
-    ensure_playwright_browsers()
+    _warm_playwright_browsers()
 
 
 @app.get("/")

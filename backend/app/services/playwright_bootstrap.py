@@ -96,12 +96,13 @@ def ensure_playwright_browsers(*, force_install: bool = False) -> bool:
     """Install Chromium if missing; return True when launch succeeds."""
     global _install_attempted
 
-    if not force_install and _can_launch_chromium(use_project_browsers=False):
-        logger.info("[Playwright] Chromium available (system/default path)")
+    if not force_install and _can_launch_chromium(use_project_browsers=True):
+        configure_playwright_env(use_project_browsers=True)
+        logger.info("[Playwright] Chromium available at %s", _BROWSERS_DIR)
         return True
 
-    if not force_install and _can_launch_chromium(use_project_browsers=True):
-        logger.info("[Playwright] Chromium available at %s", _BROWSERS_DIR)
+    if not force_install and _can_launch_chromium(use_project_browsers=False):
+        logger.info("[Playwright] Chromium available (system/default path)")
         return True
 
     if _install_attempted and not force_install:
@@ -111,10 +112,11 @@ def ensure_playwright_browsers(*, force_install: bool = False) -> bool:
 
     _install_attempted = True
 
-    if _run_browser_install(use_project_browsers=False) and _can_launch_chromium(use_project_browsers=False):
+    if _run_browser_install(use_project_browsers=True) and _can_launch_chromium(use_project_browsers=True):
+        configure_playwright_env(use_project_browsers=True)
         return True
 
-    if _run_browser_install(use_project_browsers=True) and _can_launch_chromium(use_project_browsers=True):
+    if _run_browser_install(use_project_browsers=False) and _can_launch_chromium(use_project_browsers=False):
         return True
 
     system_dir = _default_system_browser_dir()
@@ -127,7 +129,7 @@ def ensure_playwright_browsers(*, force_install: bool = False) -> bool:
 
 def launch_chromium(playwright: Playwright, *, headless: bool = True) -> Browser:
     """Launch Chromium, installing browsers on demand when missing."""
-    for use_project in (False, True):
+    for use_project in (True, False):
         configure_playwright_env(use_project_browsers=use_project)
         try:
             return playwright.chromium.launch(headless=headless)
@@ -138,13 +140,17 @@ def launch_chromium(playwright: Playwright, *, headless: bool = True) -> Browser
             logger.warning("[Playwright] Chromium missing for path strategy project=%s", use_project)
 
     if ensure_playwright_browsers(force_install=True):
-        configure_playwright_env(use_project_browsers=False)
+        configure_playwright_env(use_project_browsers=True)
         try:
             return playwright.chromium.launch(headless=headless)
         except PlaywrightError:
-            configure_playwright_env(use_project_browsers=True)
+            configure_playwright_env(use_project_browsers=False)
             return playwright.chromium.launch(headless=headless)
 
     raise PlaywrightError(
         "Chromium is not installed. Run: python -m playwright install chromium"
     )
+
+
+# Pin a stable browser directory for uvicorn reload workers and process-pool children.
+configure_playwright_env(use_project_browsers=True)

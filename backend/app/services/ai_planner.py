@@ -35,7 +35,12 @@ from app.services.website_context import ContextService
 from app.services.website_context.context_service import pool_context_loader
 from app.services.website_context.json_builder import WebsiteContext, empty_context
 from app.services.website_analysis import WebsiteAnalysis, analyze_website
-from app.services.website_analysis.journey_builder import try_build_analysis_journey
+from app.services.strategy import (
+    build_confidence_breakdown,
+    build_testing_strategy,
+    estimate_coverage,
+    try_build_strategy_journey,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +337,13 @@ async def generate_test_plan(
     planning_start = time.perf_counter()
     context = website_context or empty_context()
     analysis = website_analysis or analyze_website(context, goal=goal)
+    confidence_breakdown = build_confidence_breakdown(context, analysis)
+    strategy = build_testing_strategy(
+        analysis,
+        context,
+        goal=goal,
+        breakdown=confidence_breakdown,
+    )
     index = ContextIndex(context)
     intent_type = classify_intent(goal)
     intent = legacy_intent_string(intent_type)
@@ -343,13 +355,14 @@ async def generate_test_plan(
     provider_name = provider.name
 
     logger.info("[Planner] Detected intent: %s (%s)", intent, intent_type.value)
-    logger.info("[Planner] Website analysis: %s (confidence=%.2f)", analysis.website_type, analysis.confidence)
+    logger.info("[Planner] Website analysis: %s (confidence=%.2f)", strategy.website_type, strategy.confidence)
     logger.info("[Planner] Context summary: %s", index.summary())
     logger.info("[Planner] Navigation graph: %s", graph.tree_summary())
     logger.info("[Planner] Using AI provider: %s", provider_name)
 
     planner_snapshot = index.planner_snapshot()
     planner_snapshot["website_analysis"] = analysis.to_dict()
+    planner_snapshot["testing_strategy"] = strategy.to_dict()
 
     if await provider.is_available():
         logger.info("[Planner] Provider '%s' available", provider_name)
@@ -377,10 +390,10 @@ async def generate_test_plan(
     else:
         logger.warning("[Planner] Provider '%s' unavailable", provider_name)
 
-    if not plan and analysis.confidence >= 0.5:
-        analysis_plan = try_build_analysis_journey(analysis, context, intent=intent_type)
-        if analysis_plan:
-            plan = analysis_plan
+    if not plan and strategy.confidence >= 0.5:
+        strategy_plan = try_build_strategy_journey(strategy, context, intent=intent_type)
+        if strategy_plan:
+            plan = strategy_plan
             source = "semantic_planner"
 
     if not plan:
@@ -421,8 +434,8 @@ async def generate_test_plan(
         rejections=rejections,
     )
     planner_confidence, confidence_label = compute_planner_confidence(plan, validation_score=validation_score)
-    strategy = "AI Provider Plan" if normalize_planner_source(source) not in {"fallback", "semantic_planner"} else (
-        "Analysis-Aware Journey" if analysis.confidence >= 0.5 and source == "semantic_planner"
+    strategy_label = "AI Provider Plan" if normalize_planner_source(source) not in {"fallback", "semantic_planner"} else (
+        "Strategy-Driven Journey" if strategy.confidence >= 0.5 and source == "semantic_planner"
         else "Semantic Journey Builder" if source != "fallback"
         else "Minimal Fallback Planner"
     )
@@ -431,9 +444,10 @@ async def generate_test_plan(
         intent=intent,
         plan=plan,
         base_url=url,
-        planner_strategy=strategy,
+        planner_strategy=strategy_label,
     )
     journey_summary = build_journey_summary(plan, base_url=url)
+    coverage_report = estimate_coverage(context, plan, strategy)
     metadata = build_plan_metadata(
         planner_source=source,
         planning_time_ms=planning_time_ms,
@@ -445,21 +459,26 @@ async def generate_test_plan(
         cache_misses=context_cache.stats.cache_misses,
         planner_confidence=planner_confidence,
         planner_confidence_label=confidence_label,
-        detected_website_type=analysis.website_type or reasoning["detected_website_type"],
+        detected_website_type=strategy.website_type or reasoning["detected_website_type"],
         detected_intent=reasoning["detected_intent"],
         primary_navigation=reasoning["primary_navigation"],
         planner_strategy=reasoning["planner_strategy"],
         generated_journey=journey_summary,
-        website_type=analysis.website_type,
+        website_type=strategy.website_type,
         business_domain=analysis.business_domain,
         primary_goal=analysis.primary_goal,
         target_audience=analysis.target_audience,
-        recommended_test_flow=analysis.recommended_test_flow,
-        high_risk_areas=analysis.high_risk_areas,
-        testing_priority=analysis.testing_priority,
-        analysis_confidence=analysis.confidence,
-        analysis_reasoning=analysis.reasoning,
-        testing_strategy=f"Prioritize {', '.join(analysis.testing_priority[:3])}",
+        recommended_test_flow=strategy.recommended_test_flow,
+        high_risk_areas=strategy.high_risk_areas,
+        testing_priority=strategy.testing_priority,
+        analysis_confidence=strategy.confidence,
+        analysis_reasoning=confidence_breakdown.reasoning,
+        testing_strategy=strategy.testing_strategy,
+        confidence_breakdown=confidence_breakdown.to_dict(),
+        coverage_report=coverage_report.to_dict(),
+        execution_priority=strategy.execution_priority,
+        strategy_reasoning=strategy.reasoning,
+        estimated_coverage_percent=coverage_report.estimated_coverage_percent,
     )
 
     return {
@@ -468,4 +487,5 @@ async def generate_test_plan(
         "intent": intent,
         "metadata": metadata,
         "website_analysis": analysis.to_dict(),
+        "testing_strategy": strategy.to_dict(),
     }

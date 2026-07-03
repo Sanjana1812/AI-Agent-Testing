@@ -6,8 +6,9 @@ export default function Dashboard() {
       <div className="rounded-xl border border-slate-200 bg-card p-8 shadow-sm">
         <h1 className="text-2xl font-semibold text-heading">AI Testing Platform</h1>
         <p className="mt-3 max-w-2xl text-sm text-slate-600">
-          Submit an application URL and testing goal to create a new test run.
-          Results are mocked in Phase 2 — no execution or AI analysis yet.
+          Run intelligent AI-powered website tests against any public URL.
+          Results include website analysis, intelligent planning, execution, evidence collection,
+          and AI diagnosis.
         </p>
         <Link
           to="/run-test"
@@ -20,7 +21,7 @@ export default function Dashboard() {
       <div className="rounded-xl border border-slate-200 bg-card p-6 shadow-sm">
         <h3 className="text-sm font-semibold text-heading">Recent activity</h3>
         <p className="mt-2 text-sm text-slate-500">
-          Test history will appear here in a later phase.
+          Your recent test runs will appear here.
         </p>
       </div>
     </div>

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any
@@ -30,9 +32,45 @@ logger = logging.getLogger(__name__)
 _executor = ProcessPoolExecutor(max_workers=2)
 
 
+_TRANSIENT_CRAWL_RE = re.compile(
+    r"net::ERR_NAME_NOT_RESOLVED|net::ERR_CONNECTION|net::ERR_INTERNET_DISCONNECTED|"
+    r"net::ERR_NETWORK_CHANGED|Timed out loading",
+    re.I,
+)
+_MAX_CRAWL_ATTEMPTS = 3
+_CRAWL_RETRY_DELAY_SEC = 1.5
+
+
+def _is_transient_crawl_error(exc: Exception) -> bool:
+    return bool(_TRANSIENT_CRAWL_RE.search(str(exc)))
+
+
+def _extract_with_retry(url: str) -> WebsiteContext:
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_CRAWL_ATTEMPTS + 1):
+        try:
+            return ContextService().extract(url)
+        except CrawlError as exc:
+            last_error = exc
+            if attempt >= _MAX_CRAWL_ATTEMPTS or not _is_transient_crawl_error(exc):
+                raise
+            logger.warning(
+                "[ContextService] Transient crawl failure for %s (attempt %d/%d): %s",
+                url,
+                attempt,
+                _MAX_CRAWL_ATTEMPTS,
+                exc,
+            )
+            time.sleep(_CRAWL_RETRY_DELAY_SEC * attempt)
+    raise last_error or CrawlError(f"Failed to extract context for {url}")
+
+
 def _extract_worker(url: str) -> WebsiteContext:
     """Top-level worker entrypoint for process pool context extraction."""
-    return ContextService().extract(url)
+    from app.services.playwright_bootstrap import ensure_playwright_browsers
+
+    ensure_playwright_browsers()
+    return _extract_with_retry(url)
 
 
 def pool_context_loader(url: str) -> WebsiteContext:
@@ -117,7 +155,7 @@ class ContextService:
     async def extract_async(self, url: str) -> WebsiteContext:
         """Async wrapper suitable for FastAPI — runs sync Playwright in a process pool."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_executor, self.extract, url)
+        return await loop.run_in_executor(_executor, _extract_worker, url)
 
 
 def extract_website_context(url: str) -> WebsiteContext:

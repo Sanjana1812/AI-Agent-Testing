@@ -44,6 +44,11 @@ def build_plan_metadata(
     analysis_confidence: float | None = None,
     analysis_reasoning: str | None = None,
     testing_strategy: str | None = None,
+    confidence_breakdown: dict | None = None,
+    coverage_report: dict | None = None,
+    execution_priority: list[str] | None = None,
+    strategy_reasoning: str | None = None,
+    estimated_coverage_percent: float | None = None,
 ) -> dict:
     payload = {
         "planner_source": planner_source,
@@ -92,4 +97,14 @@ def build_plan_metadata(
         payload["analysis_reasoning"] = analysis_reasoning
     if testing_strategy:
         payload["testing_strategy"] = testing_strategy
+    if confidence_breakdown:
+        payload["confidence_breakdown"] = confidence_breakdown
+    if coverage_report:
+        payload["coverage_report"] = coverage_report
+    if execution_priority:
+        payload["execution_priority"] = execution_priority
+    if strategy_reasoning:
+        payload["strategy_reasoning"] = strategy_reasoning
+    if estimated_coverage_percent is not None:
+        payload["estimated_coverage_percent"] = estimated_coverage_percent
     return payload

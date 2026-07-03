@@ -1,5 +1,9 @@
+NAVIGATION_LANDMARK_SELECTOR_CHAIN = (
+    "[role='navigation'], nav, header nav, header:has(nav), nav a:visible"
+)
+
 SEMANTIC_TARGET_SELECTORS: dict[str, str] = {
-    "navigation": "nav, [role='navigation']",
+    "navigation": NAVIGATION_LANDMARK_SELECTOR_CHAIN,
     "menu": "nav, [role='navigation'], .menu",
     "header": "header",
     "footer": "footer",
