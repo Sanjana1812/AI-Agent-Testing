@@ -8,12 +8,15 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.schemas import RunTestRequest, RunTestResponse
 from app.services.failures.failure_enricher import enrich_failures
+from app.services.execution_intelligence import build_execution_summary
 from app.services.planner.plan_presentation import build_website_analysis
 from app.services.playwright_runner import run_test as execute_test
 from app.services.run_persistence import RunPersistenceService
 from app.services.evidence import build_evidence_package
 from app.services.website_context.context_utils import is_context_empty
 from app.services.diagnosis import build_diagnosis_report
+from app.services.evaluation import build_evaluation_report
+from app.services.strategy.coverage_engine import estimate_coverage
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ async def run_test(payload: RunTestRequest, db: Session = Depends(get_db)) -> Ru
     website_analysis = result.pop("_website_analysis", None)
     testing_strategy = result.pop("_testing_strategy", None)
     execution_evidence = result.pop("_execution_evidence", None)
-    result.pop("_execution_intelligence", None)
+    execution_export = result.pop("_execution_intelligence", None)
     source_url = result.pop("_source_url", str(payload.url))
     context_extracted = not is_context_empty(website_context)
     context_summary = build_website_analysis(website_context, context_extracted=context_extracted) if website_context else None
@@ -73,6 +76,27 @@ async def run_test(payload: RunTestRequest, db: Session = Depends(get_db)) -> Ru
         context_summary["analysis_reasoning"] = website_analysis.get("reasoning")
     result["website_context_summary"] = context_summary
     result["failures"] = enrich_failures(result, context_summary)
+    result["execution_summary"] = build_execution_summary(
+        result,
+        execution_export=execution_export,
+    )
+    effective_plan = result.get("ai_plan") or []
+    if website_context and effective_plan:
+        effective_coverage = estimate_coverage(
+            website_context,
+            effective_plan,
+            testing_strategy,
+        ).to_dict()
+        if result.get("ai_plan_metadata") is not None:
+            result["ai_plan_metadata"]["coverage_report"] = effective_coverage
+            result["ai_plan_metadata"]["estimated_coverage_percent"] = effective_coverage.get(
+                "estimated_coverage_percent"
+            )
+        if context_summary is not None:
+            context_summary["coverage_report"] = effective_coverage
+            context_summary["estimated_coverage_percent"] = effective_coverage.get(
+                "estimated_coverage_percent"
+            )
     result["evidence_package"] = build_evidence_package(
         result,
         website_context=website_context,
@@ -84,6 +108,14 @@ async def run_test(payload: RunTestRequest, db: Session = Depends(get_db)) -> Ru
     result["diagnosis_report"] = build_diagnosis_report(
         result["evidence_package"],
         goal=payload.goal,
+        execution_summary=result["execution_summary"],
+    )
+    result["evaluation_report"] = build_evaluation_report(
+        result,
+        evidence_package=result["evidence_package"],
+        diagnosis_report=result["diagnosis_report"],
+        goal=payload.goal,
+        execution_summary=result["execution_summary"],
     )
 
     persisted = RunPersistenceService(db).persist(

@@ -1,0 +1,10 @@
+{
+  "name": "Amazon",
+  "url": "https://www.amazon.in",
+  "goal": "Verify homepage navigation, search, and product browsing flows",
+  "expected_website_type": "E-commerce",
+  "expected_business_goal": "Online retail shopping",
+  "expected_journeys": ["Homepage", "Search", "Product", "Cart"],
+  "expected_priority_areas": ["Search", "Navigation", "Product", "Cart"],
+  "minimum_assertions": 2
+}

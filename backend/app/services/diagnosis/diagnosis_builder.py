@@ -32,6 +32,7 @@ def build_diagnosis_report(
     evidence_package: dict[str, Any] | None,
     *,
     goal: str = "",
+    execution_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """
     Build a DiagnosisReport from an EvidencePackage dict.
@@ -40,6 +41,10 @@ def build_diagnosis_report(
     """
     if not evidence_package or not isinstance(evidence_package, dict):
         return None
+
+    if execution_summary:
+        evidence_package = dict(evidence_package)
+        evidence_package["execution_summary"] = dict(execution_summary)
 
     if not _has_failures(evidence_package):
         return None
@@ -99,4 +104,24 @@ def build_diagnosis_report(
         report.severity,
         report.confidence * 100,
     )
-    return report.to_dict()
+    payload = report.to_dict()
+    summary = evidence_package.get("execution_summary") or {}
+    retries = int(summary.get("retry_count") or 0)
+    recoveries = int(summary.get("recovery_count") or 0)
+    skipped = int(summary.get("skipped_steps") or 0)
+    replans = int(summary.get("replan_count") or 0)
+    mode = str(summary.get("execution_mode") or "")
+    context_parts: list[str] = []
+    if retries:
+        context_parts.append(f"{retries} retry attempt(s)")
+    if recoveries:
+        context_parts.append(f"{recoveries} recovery action(s)")
+    if skipped:
+        context_parts.append(f"{skipped} skipped step(s)")
+    if replans:
+        context_parts.append(f"{replans} replanned segment(s)")
+    if mode == "ADAPTIVE":
+        context_parts.append("adaptive execution mode")
+    if context_parts:
+        payload["reasoning"] = f"{payload.get('reasoning', '').rstrip()} Execution context: " + ", ".join(context_parts) + "."
+    return payload

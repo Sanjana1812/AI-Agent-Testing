@@ -1,0 +1,10 @@
+{
+  "name": "Wikipedia",
+  "url": "https://www.wikipedia.org",
+  "goal": "Verify homepage navigation, search, and article content access",
+  "expected_website_type": "Content",
+  "expected_business_goal": "Encyclopedia access",
+  "expected_journeys": ["Homepage", "Search", "Article", "Language"],
+  "expected_priority_areas": ["Navigation", "Search", "Content"],
+  "minimum_assertions": 1
+}

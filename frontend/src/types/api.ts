@@ -197,6 +197,80 @@ export interface DiagnosisReport {
   alternative_hypotheses?: string[]
 }
 
+export interface EvaluationScorecard {
+  planner_score: number
+  execution_score: number
+  evidence_score: number
+  diagnosis_score: number
+  goal_completion_score: number
+  overall_score: number
+}
+
+export interface EvaluationSummary {
+  planner_findings?: string[]
+  execution_summary?: string
+  evidence_summary?: string
+  diagnosis_summary?: string
+  goal_completion_summary?: string
+  recommendations?: string[]
+  planner_confidence?: number
+  planner_strengths?: string[]
+  planner_weaknesses?: string[]
+  planner_reasoning?: string
+  planner_recommendations?: string[]
+  execution_strengths?: string[]
+  execution_weaknesses?: string[]
+  execution_reasoning?: string
+  execution_recommendations?: string[]
+  evidence_strengths?: string[]
+  evidence_weaknesses?: string[]
+  evidence_reasoning?: string
+  evidence_recommendations?: string[]
+  diagnosis_strengths?: string[]
+  diagnosis_weaknesses?: string[]
+  diagnosis_reasoning?: string
+  diagnosis_recommendations?: string[]
+  goal_completion_strengths?: string[]
+  goal_completion_weaknesses?: string[]
+  goal_completion_reasoning?: string
+  goal_completion_recommendations?: string[]
+  trust_level?: string
+  trust_reason?: string
+  overall_reasoning?: string
+  overall_strengths?: string[]
+  overall_weaknesses?: string[]
+  overall_recommendations?: string[]
+}
+
+export interface EvaluationReport {
+  run_id: string
+  goal: string
+  version?: string
+  scorecard: EvaluationScorecard
+  summary: EvaluationSummary
+  metrics?: Array<{ name: string; score: number; weight: number; details?: string }>
+  evaluation_case?: Record<string, unknown> | null
+  report_paths?: Record<string, string>
+  validation?: { valid: boolean; message?: string; errors?: string[] }
+}
+
+export interface AdaptiveExecutionSummary {
+  execution_mode: string
+  total_steps: number
+  completed_steps: number
+  failed_steps: number
+  skipped_steps: number
+  retry_count: number
+  recovery_count: number
+  replan_count: number
+  adaptive_decision_count: number
+  adaptive_used: boolean
+  final_status: string
+  execution_reasoning: string
+  execution_findings?: string[]
+  execution_recommendations?: string[]
+}
+
 export interface EvidenceConsoleLog {
   type: string
   text: string
@@ -243,6 +317,8 @@ export interface RunTestResponse {
   evidence_package?: EvidencePackage | null
   diagnosis_report?: DiagnosisReport | null
   execution_intelligence?: ExecutionIntelligence | null
+  execution_summary?: AdaptiveExecutionSummary | null
+  evaluation_report?: EvaluationReport | null
 }
 
 export interface RunTestPayload {

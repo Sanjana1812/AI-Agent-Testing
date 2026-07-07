@@ -182,7 +182,7 @@ class EvidenceCollector:
 
         return EvidencePackage(
             run_id=str(result.get("id") or ""),
-            execution_summary=dict(result.get("summary") or {}),
+            execution_summary=dict(result.get("execution_summary") or result.get("summary") or {}),
             website_analysis=website_analysis,
             testing_strategy=testing_strategy or _build_testing_strategy_payload(result, planner_metadata),
             execution_timeline=list(steps),

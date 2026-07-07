@@ -1,0 +1,10 @@
+{
+  "name": "Stripe",
+  "url": "https://stripe.com",
+  "goal": "Verify navigation, pricing plans, and documentation for payments",
+  "expected_website_type": "SaaS",
+  "expected_business_goal": "Payment infrastructure",
+  "expected_journeys": ["Homepage", "Pricing", "Documentation", "Contact"],
+  "expected_priority_areas": ["Navigation", "Pricing", "Documentation", "Form"],
+  "minimum_assertions": 2
+}

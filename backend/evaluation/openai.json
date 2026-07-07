@@ -1,0 +1,10 @@
+{
+  "name": "OpenAI",
+  "url": "https://openai.com",
+  "goal": "Verify homepage navigation, product pages, and pricing information",
+  "expected_website_type": "SaaS",
+  "expected_business_goal": "AI product discovery",
+  "expected_journeys": ["Homepage", "Products", "Pricing", "Documentation"],
+  "expected_priority_areas": ["Navigation", "Pricing", "Product", "Content"],
+  "minimum_assertions": 2
+}

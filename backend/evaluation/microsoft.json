@@ -1,0 +1,10 @@
+{
+  "name": "Microsoft",
+  "url": "https://www.microsoft.com",
+  "goal": "Verify navigation, product catalog, and support documentation",
+  "expected_website_type": "Enterprise",
+  "expected_business_goal": "Software and cloud services",
+  "expected_journeys": ["Homepage", "Products", "Support", "Search"],
+  "expected_priority_areas": ["Navigation", "Product", "Search", "Content"],
+  "minimum_assertions": 2
+}

@@ -12,6 +12,7 @@ from app.services.execution_intelligence.models import (
 )
 from app.services.execution_intelligence.orchestrator import ExecutionIntelligenceOrchestrator
 from app.services.execution_intelligence.runtime_classifier import FailureClassifier
+from app.services.execution_intelligence.execution_summary import build_execution_summary
 from app.services.execution_intelligence.summary import build_execution_intelligence_summary, build_summary_from_export
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "Observation",
     "StepDecisionOutcome",
     "EXECUTION_INTELLIGENCE_VERSION",
+    "build_execution_summary",
     "build_execution_intelligence_summary",
     "build_summary_from_export",
 ]

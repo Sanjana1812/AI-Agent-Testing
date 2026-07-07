@@ -106,6 +106,23 @@ class ExecutionSummary(BaseModel):
     health: str
 
 
+class AdaptiveExecutionSummary(BaseModel):
+    execution_mode: str
+    total_steps: int
+    completed_steps: int
+    failed_steps: int
+    skipped_steps: int
+    retry_count: int
+    recovery_count: int
+    replan_count: int
+    adaptive_decision_count: int
+    adaptive_used: bool
+    final_status: str
+    execution_reasoning: str
+    execution_findings: list[str] = Field(default_factory=list)
+    execution_recommendations: list[str] = Field(default_factory=list)
+
+
 class RunTestResponse(BaseModel):
     id: str
     goal: str
@@ -128,3 +145,5 @@ class RunTestResponse(BaseModel):
     evidence_package: dict | None = None
     diagnosis_report: dict | None = None
     execution_intelligence: dict | None = None
+    execution_summary: AdaptiveExecutionSummary | None = None
+    evaluation_report: dict | None = None

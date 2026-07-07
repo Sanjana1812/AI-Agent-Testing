@@ -127,6 +127,23 @@ function getPlannerConfidence(result: RunTestResponse): PlannerConfidence | null
   return null
 }
 
+function getTrustPresentation(trustLevel?: string): ConfidencePresentation {
+  const normalized = String(trustLevel || '').toUpperCase()
+  if (normalized === 'VERY_HIGH') {
+    return { label: 'Very high trust', badgeClass: 'results-badge--confidence-high', barColor: '#639922' }
+  }
+  if (normalized === 'HIGH') {
+    return { label: 'High trust', badgeClass: 'results-badge--confidence-good', barColor: '#185FA5' }
+  }
+  if (normalized === 'MEDIUM') {
+    return { label: 'Medium trust', badgeClass: 'results-badge--confidence-low', barColor: '#BA7517' }
+  }
+  if (normalized === 'LOW') {
+    return { label: 'Low trust', badgeClass: 'results-badge--confidence-very-low', barColor: '#A32D2D' }
+  }
+  return { label: 'Very low trust', badgeClass: 'results-badge--confidence-very-low', barColor: '#A32D2D' }
+}
+
 function getConfidencePresentation(value: number): ConfidencePresentation {
   if (value >= 80) {
     return { label: 'High confidence', badgeClass: 'results-badge--confidence-high', barColor: '#639922' }
@@ -858,6 +875,8 @@ export default function Results() {
     (confidenceBreakdown?.signals ?? []).every((signal) => (signal.contribution || 0) === 0)
   const evidencePackage = result?.evidence_package
   const diagnosisReport = result?.diagnosis_report
+  const executionSummary = result?.execution_summary
+  const evaluationReport = result?.evaluation_report
   const showConfidenceBreakdown =
     (confidenceBreakdown?.signals?.length ?? 0) > 0 &&
     contextExtracted &&
@@ -1506,6 +1525,139 @@ export default function Results() {
                     ))}
                   </ul>
                 </details>
+              )}
+            </section>
+          )}
+
+          {executionSummary && (
+            <section className="results-section">
+              <SectionHeader
+                title="Execution summary"
+                subtitle="Deterministic adaptive execution context"
+                meta={executionSummary.execution_mode}
+              />
+              <div className="results-stat-grid">
+                {[
+                  ['Retries', executionSummary.retry_count],
+                  ['Recoveries', executionSummary.recovery_count],
+                  ['Skipped', executionSummary.skipped_steps],
+                  ['Replanned', executionSummary.replan_count],
+                  ['Adaptive decisions', executionSummary.adaptive_decision_count],
+                  ['Completed steps', `${executionSummary.completed_steps}/${executionSummary.total_steps}`],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="results-metric-card">
+                    <p className="results-metric-card__label">{label}</p>
+                    <p className="results-metric-card__value">{value}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="results-field-value" style={{ marginTop: '1rem', lineHeight: 1.5 }}>
+                {executionSummary.execution_reasoning}
+              </p>
+              {(executionSummary.execution_findings?.length ?? 0) > 0 && (
+                <div style={{ marginTop: '1rem' }}>
+                  <p className="results-field-label">Execution findings</p>
+                  <ul className="results-diagnosis-list">
+                    {(executionSummary.execution_findings ?? []).map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {(executionSummary.execution_recommendations?.length ?? 0) > 0 && (
+                <div style={{ marginTop: '1rem' }}>
+                  <p className="results-field-label">Execution recommendations</p>
+                  <ul className="results-diagnosis-list">
+                    {(executionSummary.execution_recommendations ?? []).map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          )}
+
+          {evaluationReport?.scorecard && (
+            <section className="results-section">
+              <SectionHeader
+                title="Evaluation summary"
+                subtitle="Read-only quality scorecard for this test run"
+                meta={`${Math.round(evaluationReport.scorecard.overall_score)}% overall`}
+              />
+              {evaluationReport.summary?.trust_level && (
+                <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <span className={`results-badge ${getTrustPresentation(evaluationReport.summary.trust_level).badgeClass}`}>
+                    Trust: {getTrustPresentation(evaluationReport.summary.trust_level).label}
+                  </span>
+                  {evaluationReport.summary.trust_reason && (
+                    <p className="results-field-value" style={{ margin: 0, lineHeight: 1.5 }}>
+                      {evaluationReport.summary.trust_reason}
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className="results-stat-grid">
+                {[
+                  ['Planner', evaluationReport.scorecard.planner_score],
+                  ['Execution', evaluationReport.scorecard.execution_score],
+                  ['Evidence', evaluationReport.scorecard.evidence_score],
+                  ['Diagnosis', evaluationReport.scorecard.diagnosis_score],
+                  ['Goal completion', evaluationReport.scorecard.goal_completion_score],
+                  ['Overall AI score', evaluationReport.scorecard.overall_score],
+                ].map(([label, score]) => (
+                  <div key={String(label)} className="results-metric-card">
+                    <p className="results-metric-card__label">{label}</p>
+                    <p className="results-metric-card__value">{Math.round(Number(score))}%</p>
+                  </div>
+                ))}
+              </div>
+              <details className="results-step-details" style={{ marginTop: '1rem' }}>
+                <summary className="results-field-label" style={{ cursor: 'pointer' }}>
+                  Why this score?
+                </summary>
+                {evaluationReport.summary?.overall_reasoning && (
+                  <p className="results-field-value" style={{ marginTop: '0.75rem', lineHeight: 1.5 }}>
+                    {evaluationReport.summary.overall_reasoning}
+                  </p>
+                )}
+                {evaluationReport.summary?.overall_strengths?.length ? (
+                  <>
+                    <p className="results-field-label" style={{ marginTop: '1rem' }}>Strengths</p>
+                    <ul className="results-field-value" style={{ lineHeight: 1.6, paddingLeft: '1.25rem' }}>
+                      {evaluationReport.summary.overall_strengths.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {evaluationReport.summary?.overall_weaknesses?.length ? (
+                  <>
+                    <p className="results-field-label" style={{ marginTop: '1rem' }}>Weaknesses</p>
+                    <ul className="results-field-value" style={{ lineHeight: 1.6, paddingLeft: '1.25rem' }}>
+                      {evaluationReport.summary.overall_weaknesses.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {(evaluationReport.summary?.overall_recommendations?.length
+                  || evaluationReport.summary?.recommendations?.length) ? (
+                  <>
+                    <p className="results-field-label" style={{ marginTop: '1rem' }}>Recommendations</p>
+                    <ul className="results-field-value" style={{ lineHeight: 1.6, paddingLeft: '1.25rem' }}>
+                      {(evaluationReport.summary.overall_recommendations
+                        || evaluationReport.summary.recommendations
+                        || []).map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+              </details>
+              {evaluationReport.summary?.goal_completion_summary && (
+                <p className="results-field-value" style={{ marginTop: '1rem', lineHeight: 1.5 }}>
+                  {evaluationReport.summary.goal_completion_summary}
+                </p>
               )}
             </section>
           )}

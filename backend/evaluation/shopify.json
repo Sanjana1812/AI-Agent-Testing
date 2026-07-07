@@ -1,0 +1,10 @@
+{
+  "name": "Shopify",
+  "url": "https://www.shopify.com",
+  "goal": "Verify navigation, pricing, and product discovery for merchants",
+  "expected_website_type": "SaaS",
+  "expected_business_goal": "E-commerce platform",
+  "expected_journeys": ["Homepage", "Pricing", "Products", "Start free trial"],
+  "expected_priority_areas": ["Navigation", "Pricing", "Product", "Form"],
+  "minimum_assertions": 2
+}
